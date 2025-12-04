@@ -225,9 +225,9 @@
         <div class="top-bar-left">
           Modo: <strong>POSICIONAL (1D)</strong> · Atualização a cada <strong>5 minutos</strong>
         </div>
-        <div class="badge">
+        <div class="badge" id="status-badge">
           <span class="badge-dot"></span>
-          <span>Automação conectada (exemplo estático)</span>
+          <span>Carregando dados...</span>
         </div>
       </div>
 
@@ -254,13 +254,13 @@
       </div>
 
       <div class="footer-note" id="ultima-atualizacao">
-        Dados de exemplo carregados localmente.
+        Aguardando primeira atualização...
       </div>
     </div>
   </div>
 
   <script>
-    // EXEMPLO DE DADOS – depois vamos trocar para JSON da automação
+    // EXEMPLO DE DADOS – usado apenas como fallback
     const dadosExemplo = [
       {
         par: "BTC",
@@ -382,13 +382,58 @@
 
         tbody.appendChild(tr);
       });
-
-      const nota = document.getElementById("ultima-atualizacao");
-      nota.textContent = "Dados de exemplo – integração com automação será feita depois (loop 5 minutos).";
     }
 
-    // Inicializa o painel com os dados de exemplo
-    popularTabela(dadosExemplo);
+    function atualizarStatus(mensagem) {
+      const badge = document.getElementById("status-badge");
+      if (!badge) return;
+      const spanTexto = badge.querySelector("span:last-child");
+      if (spanTexto) spanTexto.textContent = mensagem;
+    }
+
+    async function carregarDados() {
+      const nota = document.getElementById("ultima-atualizacao");
+      try {
+        atualizarStatus("Lendo /api/mfe ...");
+
+        const resp = await fetch("/api/mfe", { cache: "no-store" });
+
+        if (!resp.ok) {
+          throw new Error("Resposta inválida da API /api/mfe");
+        }
+
+        const dados = await resp.json();
+
+        if (!Array.isArray(dados) || dados.length === 0) {
+          throw new Error("API /api/mfe retornou vazio");
+        }
+
+        popularTabela(dados);
+
+        // calcula última data/hora da lista
+        let ultimaData = dados[0].data;
+        let ultimaHora = dados[0].hora;
+        dados.forEach((linha) => {
+          if (linha.data > ultimaData || (linha.data === ultimaData && linha.hora > ultimaHora)) {
+            ultimaData = linha.data;
+            ultimaHora = linha.hora;
+          }
+        });
+
+        nota.textContent = `Atualizado via /api/mfe · Último registro: ${ultimaData} ${ultimaHora}`;
+        atualizarStatus("Automação conectada");
+      } catch (e) {
+        console.error(e);
+        // fallback: dados de exemplo
+        popularTabela(dadosExemplo);
+        nota.textContent = "Falha ao ler /api/mfe · Usando dados de exemplo locais.";
+        atualizarStatus("Usando dados de exemplo");
+      }
+    }
+
+    // carrega ao abrir e repete a cada 5 minutos (300000 ms)
+    carregarDados();
+    setInterval(carregarDados, 300000);
   </script>
 </body>
 </html>
