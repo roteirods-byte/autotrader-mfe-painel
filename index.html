@@ -47,6 +47,13 @@
       font-size: 13px;
       color: #c8d6e5;
       text-align: center;
+      margin-bottom: 4px;
+    }
+
+    .subtitle-small {
+      font-size: 11px;
+      color: #a5b1c2;
+      text-align: center;
       margin-bottom: 20px;
     }
 
@@ -124,13 +131,13 @@
     }
 
     .col-par { width: 70px; }
-    .col-side { width: 70px; }
+    .col-side { width: 80px; }
     .col-preco { width: 90px; }
     .col-alvo { width: 90px; }
     .col-ganho { width: 80px; }
     .col-zona { width: 90px; }
     .col-risco { width: 90px; }
-    .col-prior { width: 100px; }
+    .col-prior { width: 110px; }
     .col-data { width: 90px; }
     .col-hora { width: 70px; }
 
@@ -203,6 +210,13 @@
       text-align: right;
     }
 
+    .info-left {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #8395a7;
+      text-align: left;
+    }
+
     @media (max-width: 768px) {
       .title {
         font-size: 20px;
@@ -218,6 +232,9 @@
     <div class="title">Painel MFE Posicional – Decisão de Entradas</div>
     <div class="subtitle">
       PAR · SIDE · PREÇO · ALVO · GANHO % · ZONA · RISCO · PRIORIDADE · DATA · HORA
+    </div>
+    <div class="subtitle-small">
+      Universo fixo: <strong>50 moedas</strong> · Este painel mostra apenas moedas com sinal <strong>LONG</strong> ou <strong>SHORT</strong>
     </div>
 
     <div class="card">
@@ -253,14 +270,17 @@
         </table>
       </div>
 
+      <div class="info-left" id="info-contagem">
+        <!-- será preenchido via JS -->
+      </div>
       <div class="footer-note" id="ultima-atualizacao">
-        Aguardando primeira atualização...
+        Aguardando primeira atualização (dados de exemplo).
       </div>
     </div>
   </div>
 
   <script>
-    // EXEMPLO DE DADOS – usado apenas como fallback
+    // EXEMPLO DE DADOS – usado apenas como fallback por enquanto
     const dadosExemplo = [
       {
         par: "BTC",
@@ -301,8 +321,8 @@
       {
         par: "ICP",
         side: "LONG",
-        preco: 15.80,
-        alvo: 17.90,
+        preco: 15.8,
+        alvo: 17.9,
         ganho_pct: 13.3,
         zona: "VERMELHA",
         risco: "ALTO",
@@ -313,8 +333,8 @@
       {
         par: "FLUX",
         side: "NAO_ENTRAR",
-        preco: 0.950,
-        alvo: 0.000,
+        preco: 0.95,
+        alvo: 0.0,
         ganho_pct: 0.0,
         zona: "-",
         risco: "ALTO",
@@ -360,28 +380,56 @@
       return v.toFixed(2) + " %";
     }
 
-    function popularTabela(dados) {
+    function atualizarContagem(totalUniverso, totalComSinal) {
+      const el = document.getElementById("info-contagem");
+      if (!el) return;
+      el.textContent =
+        `Universo calculado: ${totalUniverso} moedas · Com sinal (LONG/SHORT) neste ciclo: ${totalComSinal}`;
+    }
+
+    function popularTabela(dadosBrutos) {
       const tbody = document.getElementById("tabela-mfe");
       tbody.innerHTML = "";
 
-      dados.forEach((linha) => {
+      // Universo total (50 moedas na automação real)
+      const totalUniverso = dadosBrutos.length || 50;
+
+      // Filtrar apenas moedas com sinal LONG ou SHORT
+      const dados = dadosBrutos.filter(
+        (linha) => linha.side === "LONG" || linha.side === "SHORT"
+      );
+
+      const totalComSinal = dados.length;
+
+      if (dados.length === 0) {
         const tr = document.createElement("tr");
-
-        tr.innerHTML = `
-          <td class="col-par">${linha.par}</td>
-          <td class="col-side ${classeSide(linha.side)}">${linha.side}</td>
-          <td class="col-preco">${formatPreco(linha.preco)}</td>
-          <td class="col-alvo">${linha.alvo > 0 ? formatPreco(linha.alvo) : "-"}</td>
-          <td class="col-ganho">${formatGanho(linha.ganho_pct)}</td>
-          <td class="col-zona ${classeZona(linha.zona)}">${linha.zona}</td>
-          <td class="col-risco ${classeRisco(linha.risco)}">${linha.risco}</td>
-          <td class="col-prior ${classePrioridade(linha.prioridade)}">${linha.prioridade}</td>
-          <td class="col-data">${linha.data}</td>
-          <td class="col-hora">${linha.hora}</td>
-        `;
-
+        tr.innerHTML =
+          `<td colspan="10" style="padding:12px; font-size:12px; color:#c8d6e5;">` +
+          `Nenhuma moeda com sinal LONG/SHORT neste ciclo. Aguardando próxima atualização...` +
+          `</td>`;
         tbody.appendChild(tr);
-      });
+      } else {
+        dados.forEach((linha) => {
+          const tr = document.createElement("tr");
+
+          tr.innerHTML = `
+            <td class="col-par">${linha.par}</td>
+            <td class="col-side ${classeSide(linha.side)}">${linha.side}</td>
+            <td class="col-preco">${formatPreco(linha.preco)}</td>
+            <td class="col-alvo">${linha.alvo > 0 ? formatPreco(linha.alvo) : "-"}</td>
+            <td class="col-ganho">${formatGanho(linha.ganho_pct)}</td>
+            <td class="col-zona ${classeZona(linha.zona)}">${linha.zona}</td>
+            <td class="col-risco ${classeRisco(linha.risco)}">${linha.risco}</td>
+            <td class="col-prior ${classePrioridade(linha.prioridade)}">${linha.prioridade}</td>
+            <td class="col-data">${linha.data}</td>
+            <td class="col-hora">${linha.hora}</td>
+          `;
+
+          tbody.appendChild(tr);
+        });
+      }
+
+      atualizarContagem(totalUniverso, totalComSinal);
     }
 
     function atualizarStatus(mensagem) {
@@ -420,13 +468,15 @@
           }
         });
 
-        nota.textContent = `Atualizado via /api/mfe · Último registro: ${ultimaData} ${ultimaHora}`;
+        nota.textContent =
+          `Atualizado via /api/mfe · Último registro: ${ultimaData} ${ultimaHora} (dados da automação)`;
         atualizarStatus("Automação conectada");
       } catch (e) {
         console.error(e);
         // fallback: dados de exemplo
         popularTabela(dadosExemplo);
-        nota.textContent = "Falha ao ler /api/mfe · Usando dados de exemplo locais.";
+        nota.textContent =
+          "Falha ao ler /api/mfe · Usando dados de exemplo locais (hora fixa de demonstração).";
         atualizarStatus("Usando dados de exemplo");
       }
     }
