@@ -14,34 +14,6 @@ const PORT = process.env.PORT || 8082;
 const ENTRADA_PATH =
   "/home/roteiro_ds/autotrader-planilhas-python/data/entrada.json";
 
-// ---------- DADOS DE EXEMPLO (apenas se der erro) ----------
-const dadosExemplo = [
-  {
-    par: "BTC",
-    side: "SHORT",
-    preco: 95000.123,
-    alvo: 91200.456,
-    ganho_pct: 4.0,
-    zona: "VERDE",
-    risco: "BAIXO",
-    prioridade: "ALTA",
-    data: "2025-12-03",
-    hora: "19:05",
-  },
-  {
-    par: "ETH",
-    side: "LONG",
-    preco: 3800.456,
-    alvo: 3940.234,
-    ganho_pct: 3.7,
-    zona: "VERDE",
-    risco: "BAIXO",
-    prioridade: "ALTA",
-    data: "2025-12-03",
-    hora: "19:05",
-  },
-];
-
 // ---------- CLASSIFICAÇÕES AUXILIARES ----------
 
 const RISCO_BAIXO = new Set([
@@ -60,25 +32,25 @@ function classificarRisco(par) {
   return "MÉDIO";
 }
 
-function classificarZona(ganho) {
-  if (ganho <= 0) return "-";
-  if (ganho < 3) return "AMARELA";   // pouco ganho
-  if (ganho <= 8) return "VERDE";    // zona ideal
-  return "VERMELHA";                 // muito agressivo
+function classificarZona(ganhoAbs) {
+  if (ganhoAbs <= 0) return "-";
+  if (ganhoAbs < 3) return "AMARELA";   // pouco ganho
+  if (ganhoAbs <= 8) return "VERDE";    // zona ideal
+  return "VERMELHA";                    // muito agressivo
 }
 
-function classificarPrioridade(side, ganho, risco, assertPct) {
+function classificarPrioridade(side, ganhoAbs, risco, assertPct) {
   if (side === "NAO_ENTRAR") return "NÃO OPERAR";
 
   let prioridade = "BAIXA";
 
-  if (ganho >= 3 && ganho <= 8 && (risco === "BAIXO" || risco === "MÉDIO")) {
+  if (ganhoAbs >= 3 && ganhoAbs <= 8 && (risco === "BAIXO" || risco === "MÉDIO")) {
     prioridade = "MÉDIA";
   }
-  if (ganho >= 4 && risco === "BAIXO") {
+  if (ganhoAbs >= 4 && risco === "BAIXO") {
     prioridade = "ALTA";
   }
-  if (ganho >= 6 && risco === "BAIXO") {
+  if (ganhoAbs >= 6 && risco === "BAIXO") {
     prioridade = "ALTA";
   }
 
@@ -102,21 +74,26 @@ function montarPainelAPartirDeEntrada() {
   const listaPosicional = Array.isArray(json.posicional) ? json.posicional : [];
 
   const saida = listaPosicional.map((item) => {
+    const sideRaw = item.side || item.sinal || item.SIDE || "NAO_ENTRAR";
+
+    const ganhoBruto = typeof item.ganho_pct === "number" ? item.ganho_pct : 0;
+    const ganhoAbs = Math.abs(ganhoBruto); // GANHO SEMPRE POSITIVO
+
     const risco = classificarRisco(item.par);
-    const zona = classificarZona(item.ganho_pct || 0);
+    const zona = classificarZona(ganhoAbs);
     const prioridade = classificarPrioridade(
-      item.side,
-      item.ganho_pct || 0,
+      sideRaw,
+      ganhoAbs,
       risco,
       item.assert_pct
     );
 
     return {
       par: item.par,
-      side: item.side,
+      side: sideRaw,
       preco: item.preco,
       alvo: item.alvo,
-      ganho_pct: item.ganho_pct,
+      ganho_pct: ganhoAbs,      // já em valor absoluto
       zona,
       risco,
       prioridade,
@@ -131,7 +108,6 @@ function montarPainelAPartirDeEntrada() {
   };
 }
 
-// ---------- MIDDLEWARES ----------
 app.use(express.json());
 const publicDir = path.join(__dirname);
 app.use(express.static(publicDir));
@@ -141,13 +117,12 @@ app.get("/api/mfe", (req, res) => {
   try {
     const resultado = montarPainelAPartirDeEntrada();
     if (!resultado || resultado.registros.length === 0) {
-      // fallback para dados de exemplo
-      return res.json(dadosExemplo);
+      return res.json([]); // sem fallback: se não tiver nada, o front avisa
     }
     return res.json(resultado.registros);
   } catch (err) {
     console.error("Erro em /api/mfe:", err);
-    return res.json(dadosExemplo);
+    return res.json([]);
   }
 });
 
