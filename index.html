@@ -216,15 +216,6 @@
       color: #8395a7;
       text-align: left;
     }
-
-    @media (max-width: 768px) {
-      .title {
-        font-size: 20px;
-      }
-      .subtitle {
-        font-size: 12px;
-      }
-    }
   </style>
 </head>
 <body>
@@ -234,7 +225,7 @@
       PAR · SIDE · PREÇO · ALVO · GANHO % · ZONA · RISCO · PRIORIDADE · DATA · HORA
     </div>
     <div class="subtitle-small">
-      Universo fixo: <strong>50 moedas</strong> · Este painel mostra apenas moedas com sinal <strong>LONG</strong> ou <strong>SHORT</strong>
+      Este painel lê os dados POSICIONAL da automação (entrada.json) e mostra todas as moedas, incluindo NAO_ENTRAR.
     </div>
 
     <div class="card">
@@ -270,80 +261,14 @@
         </table>
       </div>
 
-      <div class="info-left" id="info-contagem">
-        <!-- será preenchido via JS -->
-      </div>
+      <div class="info-left" id="info-contagem"></div>
       <div class="footer-note" id="ultima-atualizacao">
-        Aguardando primeira atualização (dados de exemplo).
+        Aguardando primeira atualização...
       </div>
     </div>
   </div>
 
   <script>
-    // EXEMPLO DE DADOS – usado apenas como fallback por enquanto
-    const dadosExemplo = [
-      {
-        par: "BTC",
-        side: "SHORT",
-        preco: 95000.123,
-        alvo: 91200.456,
-        ganho_pct: 4.0,
-        zona: "VERDE",
-        risco: "BAIXO",
-        prioridade: "ALTA",
-        data: "2025-12-03",
-        hora: "19:05",
-      },
-      {
-        par: "ETH",
-        side: "LONG",
-        preco: 3800.456,
-        alvo: 3940.234,
-        ganho_pct: 3.7,
-        zona: "VERDE",
-        risco: "BAIXO",
-        prioridade: "ALTA",
-        data: "2025-12-03",
-        hora: "19:05",
-      },
-      {
-        par: "ADA",
-        side: "SHORT",
-        preco: 0.620,
-        alvo: 0.582,
-        ganho_pct: 6.1,
-        zona: "VERDE",
-        risco: "MÉDIO",
-        prioridade: "ALTA",
-        data: "2025-12-03",
-        hora: "19:05",
-      },
-      {
-        par: "ICP",
-        side: "LONG",
-        preco: 15.8,
-        alvo: 17.9,
-        ganho_pct: 13.3,
-        zona: "VERMELHA",
-        risco: "ALTO",
-        prioridade: "MÉDIA",
-        data: "2025-12-03",
-        hora: "19:05",
-      },
-      {
-        par: "FLUX",
-        side: "NAO_ENTRAR",
-        preco: 0.95,
-        alvo: 0.0,
-        ganho_pct: 0.0,
-        zona: "-",
-        risco: "ALTO",
-        prioridade: "NÃO OPERAR",
-        data: "2025-12-03",
-        hora: "19:05",
-      },
-    ];
-
     function classeSide(side) {
       if (side === "LONG") return "side-long";
       if (side === "SHORT") return "side-short";
@@ -373,10 +298,12 @@
     }
 
     function formatPreco(v) {
+      if (typeof v !== "number") return "-";
       return v.toFixed(3);
     }
 
     function formatGanho(v) {
+      if (typeof v !== "number") return "0.00 %";
       return v.toFixed(2) + " %";
     }
 
@@ -384,52 +311,51 @@
       const el = document.getElementById("info-contagem");
       if (!el) return;
       el.textContent =
-        `Universo calculado: ${totalUniverso} moedas · Com sinal (LONG/SHORT) neste ciclo: ${totalComSinal}`;
+        `Universo calculado (POSICIONAL): ${totalUniverso} moedas · ` +
+        `Com sinal (LONG/SHORT): ${totalComSinal}`;
     }
 
     function popularTabela(dadosBrutos) {
-            const tbody = document.getElementById("tabela-mfe");
+      const tbody = document.getElementById("tabela-mfe");
       tbody.innerHTML = "";
 
-      // Universo total (ideal: 50 moedas)
-      const totalUniverso = dadosBrutos.length || 50;
-
-      // Quantas têm sinal LONG/SHORT
+      const totalUniverso = dadosBrutos.length;
       const totalComSinal = dadosBrutos.filter(
         (linha) => linha.side === "LONG" || linha.side === "SHORT"
       ).length;
 
-      const dados = dadosBrutos; // Exibe TODAS as moedas, inclusive NAO_ENTRAR
-
-      if (!dados || dados.length === 0) {
+      if (!dadosBrutos || dadosBrutos.length === 0) {
         const tr = document.createElement("tr");
         tr.innerHTML =
           `<td colspan="10" style="padding:12px; font-size:12px; color:#c8d6e5;">` +
-          `Nenhum dado recebido da automação. Verifique o arquivo entrada.json.` +
+          `Nenhum registro POSICIONAL recebido da automação.` +
           `</td>`;
         tbody.appendChild(tr);
-      } else {
-        dados.forEach((linha) => {
-          const tr = document.createElement("tr");
-
-          tr.innerHTML = `
-            <td class="col-par">${linha.par}</td>
-            <td class="col-side ${classeSide(linha.side)}">${linha.side}</td>
-            <td class="col-preco">${formatPreco(linha.preco)}</td>
-            <td class="col-alvo">${linha.alvo > 0 ? formatPreco(linha.alvo) : "-"}</td>
-            <td class="col-ganho">${formatGanho(linha.ganho_pct)}</td>
-            <td class="col-zona ${classeZona(linha.zona)}">${linha.zona}</td>
-            <td class="col-risco ${classeRisco(linha.risco)}">${linha.risco}</td>
-            <td class="col-prior ${classePrioridade(linha.prioridade)}">${linha.prioridade}</td>
-            <td class="col-data">${linha.data}</td>
-            <td class="col-hora">${linha.hora}</td>
-          `;
-
-          tbody.appendChild(tr);
-        });
+        atualizarContagem(0, 0);
+        return;
       }
 
+      dadosBrutos.forEach((linha) => {
+        const tr = document.createElement("tr");
+
+        tr.innerHTML = `
+          <td class="col-par">${linha.par}</td>
+          <td class="col-side ${classeSide(linha.side)}">${linha.side}</td>
+          <td class="col-preco">${formatPreco(linha.preco)}</td>
+          <td class="col-alvo">${linha.alvo > 0 ? formatPreco(linha.alvo) : "-"}</td>
+          <td class="col-ganho">${formatGanho(linha.ganho_pct)}</td>
+          <td class="col-zona ${classeZona(linha.zona)}">${linha.zona}</td>
+          <td class="col-risco ${classeRisco(linha.risco)}">${linha.risco}</td>
+          <td class="col-prior ${classePrioridade(linha.prioridade)}">${linha.prioridade}</td>
+          <td class="col-data">${linha.data}</td>
+          <td class="col-hora">${linha.hora}</td>
+        `;
+
+        tbody.appendChild(tr);
+      });
+
       atualizarContagem(totalUniverso, totalComSinal);
+    }
 
     function atualizarStatus(mensagem) {
       const badge = document.getElementById("status-badge");
@@ -457,7 +383,7 @@
 
         popularTabela(dados);
 
-        // calcula última data/hora da lista
+        // última data/hora
         let ultimaData = dados[0].data;
         let ultimaHora = dados[0].hora;
         dados.forEach((linha) => {
@@ -472,17 +398,14 @@
         atualizarStatus("Automação conectada");
       } catch (e) {
         console.error(e);
-        // fallback: dados de exemplo
-        popularTabela(dadosExemplo);
         nota.textContent =
-          "Falha ao ler /api/mfe · Usando dados de exemplo locais (hora fixa de demonstração).";
-        atualizarStatus("Usando dados de exemplo");
+          "Falha ao ler /api/mfe. Verifique se o arquivo entrada.json está sendo gerado.";
+        atualizarStatus("Erro ao ler automação");
       }
     }
 
-    // carrega ao abrir e repete a cada 5 minutos (300000 ms)
     carregarDados();
-    setInterval(carregarDados, 300000);
+    setInterval(carregarDados, 300000); // 5 minutos
   </script>
 </body>
 </html>
