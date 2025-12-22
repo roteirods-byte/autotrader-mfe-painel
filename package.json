@@ -1,0 +1,24 @@
+{
+  "name": "autotrader-mfe-painel",
+  "version": "1.0.0",
+  "description": "Painel de decisão MFE Posicional – PAR, SIDE, PREÇO, ALVO, GANHO %, ZONA, RISCO, PRIORIDADE, DATA, HORA",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roteirods-byte/autotrader-mfe-painel.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/roteirods-byte/autotrader-mfe-painel/issues"
+  },
+  "homepage": "https://github.com/roteirods-byte/autotrader-mfe-painel#readme",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

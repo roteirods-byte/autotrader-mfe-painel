@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+worker_mfe.py
+AUTOTRADER – PAINEL DE ENTRADA MFE
+Autor: ChatGPT + Jorge
+Atualizado: 2025-12-05
+
+Fluxo:
+1. Carregar estudos MFE (mfe_estudos.csv)
+2. Preço médio Binance + Bybit
+3. Calcular 3 alvos p50 / p60 / p70
+4. Ganho LONG e SHORT (sempre POSITIVO)
+5. Escolher melhor lado
+6. Filtrar moedas com ganho ≥ 3%
+7. Calcular zona, risco e prioridade
+8. Salvar entrada.json no formato do painel MFE
+"""
+
+import json
+import csv
+import requests
+from datetime import datetime
+import time
+
+# ============================================================
+# CONFIGURAÇÕES GERAIS
+# ============================================================
+
+# Caminho onde o painel MFE lê o JSON
+OUTPUT_JSON = "/home/roteiro_ds/autotrader-mfe-painel/entrada.json"
+
+# Caminho do arquivo de estudos
+MFE_CSV = "/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv"
+
+# Tempo entre ciclos (5 minutos)
+INTERVALO = 300
+
+# ============================================================
+# UNIVERSO DAS 50 MOEDAS SELECIONADAS
+# ============================================================
+
+MOEDAS_50 = [
+"BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","TRX",
+"LINK","MATIC","ATOM","LTC","BCH","FIL","ICP","APT","ARB","SUI",
+"OP","INJ","RUNE","FET","TIA","SEI","NEAR","AAVE","LDO","UNI",
+"ETC","FTM","MKR","SNX","IMX","WIF","PEPE","POL","AXS","FLUX",
+"ALGO","GALA","EGLD","KAS","MINA","AR","PYTH","JTO","JUP","TON"
+]
+
+# ============================================================
+# OBTER PREÇO MÉDIO (BINANCE + BYBIT)
+# ============================================================
+
+def preco_atual(par):
+    """Retorna o preço médio entre Binance e Bybit."""
+    simbolo = par + "USDT"
+
+    # Binance
+    url_b = f"https://api.binance.com/api/v3/ticker/price?symbol={simbolo}"
+    try:
+        p_b = float(requests.get(url_b, timeout=3).json().get("price", 0))
+    except:
+        p_b = 0
+
+    # Bybit
+    url_y = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={par}USDT"
+    try:
+        r = requests.get(url_y, timeout=3).json()
+        p_y = float(r["result"]["list"][0]["lastPrice"])
+    except:
+        p_y = 0
+
+    # Se uma falhar, usa só a outra
+    if p_b > 0 and p_y > 0:
+        return (p_b + p_y) / 2
+    if p_b > 0:
+        return p_b
+    return p_y
+
+
+# ============================================================
+# CARREGAR ESTUDOS MFE
+# ============================================================
+
+def carregar_mfe():
+    """
+    Lê o CSV com percentis MFE e transforma em:
+    dados[PAR][SIDE][PERCENTIL] = alvo_pct
+    """
+    dados = {}
+
+    with open(MFE_CSV, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        for row in reader:
+            par = row["PAR"]
+            side = row["LADO"]
+            pct = float(row["PERCENTIL"])
+            alvo_pct = float(row["ALVO_PCT"])
+
+            if par not in dados:
+                dados[par] = {"LONG": {}, "SHORT": {}}
+
+            dados[par][side][pct] = alvo_pct
+
+    return dados
+
+
+# ============================================================
+# CLASSIFICAÇÕES
+# ============================================================
+
+RISCO_BAIXO = {"BTC","ETH","BNB","XRP","ADA","SOL","TRX","LTC","LINK","ATOM","NEAR","OP","UNI","POL"}
+RISCO_ALTO  = {"ICP","FET","FLUX","PEPE","WIF","GALA","TNSR","SEI","AXS","RUNE"}
+
+def classificar_risco(par):
+    if par in RISKO_BAIXO:
+        return "BAIXO"
+    if par in RISKO_ALTO:
+        return "ALTO"
+    return "MÉDIO"
+
+def classificar_zona(ganho):
+    if ganho < 3:
+        return "AMARELA"
+    if 3 <= ganho <= 8:
+        return "VERDE"
+    return "VERMELHA"
+
+def classificar_prioridade(zona, ganho):
+    # MODELO C
+    if zona == "VERDE" and ganho >= 8:
+        return "ALTA"
+    if zona == "VERDE" and ganho >= 4:
+        return "MÉDIA"
+    if zona == "AMARELA" and ganho >= 3:
+        return "BAIXA"
+    return "NÃO OPERAR"
+
+
+# ============================================================
+# PRINCIPAL: CALCULAR SINAL PARA CADA MOEDA
+# ============================================================
+
+def calcular_sinal(par, mfe):
+    """
+    Retorna dicionário com sinal final da moeda:
+    {
+      par, side, preco, alvo, ganho_pct, zona, risco, prioridade, data, hora
+    }
+    """
+
+    # Preço real
+    preco = preco_atual(par)
+    if preco <= 0:
+        return None
+
+    # PRECISA existir MFE para LONG e SHORT
+    if par not in mfe:
+        return None
+
+    long_pct = mfe[par]["LONG"]
+    short_pct = mfe[par]["SHORT"]
+
+    # Se faltar percentis, ignora moeda
+    if 50.0 not in long_pct or 60.0 not in long_pct or 70.0 not in long_pct:
+        return None
+    if 50.0 not in short_pct or 60.0 not in short_pct or 70.0 not in short_pct:
+        return None
+
+    # Calcula alvos
+    alvo_long_70  = preco * (1 + long_pct[70.0] / 100)
+    alvo_short_70 = preco * (1 - short_pct[70.0] / 100)
+
+    # Ganhos sempre positivos:
+    ganho_long  = (alvo_long_70  - preco) / preco * 100
+    ganho_short = (preco - alvo_short_70) / preco * 100
+
+    # Escolher lado
+    if ganho_long >= ganho_short:
+        side = "LONG"
+        alvo = alvo_long_70
+        ganho = ganho_long
+    else:
+        side = "SHORT"
+        alvo = alvo_short_70
+        ganho = ganho_short
+
+    # Filtrar ganho mínimo de 3%
+    if ganho < 3:
+        return None
+
+    # Zona, risco, prioridade
+    zona = classificar_zona(ganho)
+    risco = classificar_risco(par)
+    prioridade = classificar_prioridade(zona, ganho)
+
+    if prioridade == "NÃO OPERAR":
+        return None
+
+    # Data e hora
+    agora = datetime.now()
+    data = agora.strftime("%Y-%m-%d")
+    hora = agora.strftime("%H:%M")
+
+    return {
+        "par": par,
+        "side": side,
+        "preco": round(preco, 3),
+        "alvo": round(alvo, 3),
+        "ganho_pct": round(ganho, 2),
+        "zona": zona,
+        "risco": risco,
+        "prioridade": prioridade,
+        "data": data,
+        "hora": hora
+    }
+
+
+# ============================================================
+# LOOP PRINCIPAL
+# ============================================================
+
+def loop():
+    print("Worker MFE iniciado…")
+
+    while True:
+        try:
+            mfe = carregar_mfe()
+            sinais = []
+
+            for par in MOEDAS_50:
+                sinal = calcular_sinal(par, mfe)
+                if sinal:
+                    sinais.append(sinal)
+
+            # Ordenar por maior ganho
+            sinais.sort(key=lambda x: x["ganho_pct"], reverse=True)
+
+            # Gravar JSON
+            saida = {
+                "posicional": sinais,
+                "ultima_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+
+            with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+                json.dump(saida, f, indent=2)
+
+            print(f"[OK] Atualizado: {saida['ultima_atualizacao']} | Total exibidas: {len(sinais)}")
+
+        except Exception as e:
+            print("ERRO NO LOOP:", e)
+
+        time.sleep(INTERVALO)
+
+
+if __name__ == "__main__":
+    loop()
