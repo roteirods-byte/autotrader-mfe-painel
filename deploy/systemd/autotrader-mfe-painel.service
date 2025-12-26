@@ -1,0 +1,17 @@
+[Unit]
+Description=AUTOTRADER MFE - Painel (Node)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=roteiro_ds
+WorkingDirectory=/home/roteiro_ds/ENTRADA-MFE
+Environment=PORT=8082
+Environment=ENTRADA_JSON=/home/roteiro_ds/ENTRADA-MFE/entrada.json
+ExecStart=/usr/bin/node /home/roteiro_ds/ENTRADA-MFE/server.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

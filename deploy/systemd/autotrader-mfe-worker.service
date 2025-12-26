@@ -1,0 +1,20 @@
+[Unit]
+Description=AUTOTRADER MFE - Worker (gera entrada.json)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=roteiro_ds
+WorkingDirectory=/home/roteiro_ds/ENTRADA-MFE
+Environment=APP_TZ=America/Sao_Paulo
+Environment=OUTPUT_JSON=/home/roteiro_ds/ENTRADA-MFE/entrada.json
+Environment=MFE_CSV=/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv
+Environment=PYTHONUNBUFFERED=1
+Environment=INTERVALO=300
+ExecStart=/usr/bin/python3 /home/roteiro_ds/ENTRADA-MFE/worker_mfe.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

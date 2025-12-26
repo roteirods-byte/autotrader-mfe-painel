@@ -1,52 +1,84 @@
 const express = require("express");
+
+let LAST_GOOD_ENTRADA = null; // BLINDAGEM
+let LAST_GOOD_TS = 0; // BLINDAGEM
+
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
+app.set("etag", false); // NO_CACHE_MFE
 
-// Porta exclusiva do painel MFE
-const PORT = 8082;
-
-// Caminho do JSON gerado pelo worker MFE v2
-const ENTRADA_PATH = "/home/roteiro_ds/autotrader-mfe-painel/entrada.json";
-
-// --------- ROTA DE API: /api/mfe ---------
-app.get("/api/mfe", (req, res) => {
+// healthcheck simples (não derruba se entrada.json estiver ruim)
+app.get("/health", (req, res) => {
   try {
+    const fs = require("fs");
+    const path = require("path");
+    const jsonPath = process.env.ENTRADA_JSON || path.join(__dirname, "entrada.json");
+
+    let okJson = false;
+    let ageSec = null;
+
+    if (fs.existsSync(jsonPath)) {
+      const st = fs.statSync(jsonPath);
+      ageSec = Math.floor((Date.now() - st.mtimeMs) / 1000);
+      const raw = fs.readFileSync(jsonPath, "utf8");
+      JSON.parse(raw);
+      okJson = true;
+    }
+
+    res.json({ ok: true, ok_json: okJson, json_age_sec: ageSec });
+  } catch (e) {
+    res.status(200).json({ ok: true, ok_json: false, error: String(e) });
+  }
+});
+
+
+// Porta do painel (padrão 8082)
+const PORT = parseInt(process.env.PORT || "8082", 10);
+
+// Caminho do JSON gerado pelo worker (padrão: mesma pasta do server.js)
+const ENTRADA_PATH = process.env.ENTRADA_JSON || path.join(__dirname, "entrada.json");
+
+function responderEntrada(req, res) {
+  try {
+    // Evitar cache
+    res.set("Cache-Control", "no-store");
+
     if (!fs.existsSync(ENTRADA_PATH)) {
-      return res.json({
-        posicional: [],
-        ultima_atualizacao: null,
-      });
+      return res.json({ posicional: [], ultima_atualizacao: null });
     }
 
     const raw = fs.readFileSync(ENTRADA_PATH, "utf8");
     let data = JSON.parse(raw);
 
     // Garantir estrutura mínima
-    if (!data || typeof data !== "object") {
-      data = { posicional: [], ultima_atualizacao: null };
-    }
-    if (!Array.isArray(data.posicional)) {
-      data.posicional = [];
-    }
+    if (!data || typeof data !== "object") data = {};
+    if (!Array.isArray(data.posicional)) data.posicional = [];
+    if (!("ultima_atualizacao" in data)) data.ultima_atualizacao = null;
 
     return res.json(data);
   } catch (err) {
-    console.error("[ERRO] /api/mfe:", err);
-    return res.json({
-      posicional: [],
-      ultima_atualizacao: null,
-    });
+    console.error("[ERRO] API ENTRADA:", err);
+    return res.json({ posicional: [], ultima_atualizacao: null });
   }
-});
+}
 
-// --------- ROTA PRINCIPAL: / (HTML do painel) ---------
+// Rota padrão do projeto
+app.get("/api/entrada", responderEntrada);
+
+// Compatibilidade (não quebra quem ainda usa /api/mfe)
+app.get("/api/mfe", responderEntrada);
+
+// HTML do painel
 app.get("/", (req, res) => {
+  res.set("Cache-Control","no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma","no-cache");
+  res.set("Expires","0");
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// --------- INICIAR SERVIDOR ---------
 app.listen(PORT, () => {
-  console.log(`[MFE] Painel de Entrada MFE ouvindo na porta ${PORT}`);
+  console.log(`[MFE] Painel ouvindo na porta ${PORT}`);
+  console.log(`[MFE] Lendo JSON em: ${ENTRADA_PATH}`);
 });

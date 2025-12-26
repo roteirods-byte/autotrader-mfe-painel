@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+# ENTRADA-MFE (Posicional 1D) - versão realista/profissional
+# - Exchange: BITGET (evita bloqueios regionais do Binance/Bybit na VM)
+# - ALVO por ATR (volatilidade) + RR fixo
+# - GANHO% limitado (clamp) para não aparecer absurdo
+# - Assertividade por backtest simples (últimos N dias, holding max H)
+# - Sempre exibe: SINAIS (fortes) + WATCHLIST (oportunidades próximas)
+
+import json
+import math
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import ccxt
+
+OUTPUT_JSON = "/home/roteiro_ds/ENTRADA-MFE/entrada.json"
+TZ = ZoneInfo("America/Sao_Paulo")
+
+TIMEFRAME = "1d"
+LIMIT = 250                 # candles puxados (mínimo p/ backtest)
+BACKTEST_DAYS = 180         # barras usadas no backtest
+HOLD_DAYS = 14              # holding máximo pra “chegou no alvo?”
+ATR_LEN = 14
+EMA_FAST = 20
+EMA_SLOW = 50
+RSI_LEN = 14
+
+RR = 2.0                    # risco/retorno (alvo = stop_dist * RR)
+STOP_ATR = 1.2              # stop = ATR * STOP_ATR
+GANHO_MIN_SINAL = 3.0       # só vira SINAL se >= 3%
+GANHO_MIN_WATCH = 2.0       # watchlist se >= 2%
+GANHO_MAXIMO_PCT = 25.0     # trava anti-ganho absurdo
+
+ASSERT_MIN_SINAL = 0.65     # 65% (SINAL)
+ASSERT_MIN_WATCH = 0.55     # 55% (WATCHLIST)
+
+MAX_SINAIS = 10             # quantos “SINAIS” no máximo
+MAX_WATCH = 12              # quantos “WATCH” no máximo
+
+# lista (mantive a sua atual)
+COINS = [
+ "AAVE","ADA","APE","APT","ARB","ATOM","AVAX","AXS","BAM","BCH","BLUR","BNB","BONK","BTC",
+ "COMP","CRV","DASH","DGB","DENT","DOGE","DOT","EGLD","EOS","ETC","ETH","FET","FIL","FLOKI",
+ "FLOW","FTM","GALA","GLM","GRT","HBAR","IMX","INJ","IOST","ICP","KAS","KAVA","KSM","LINK",
+ "LTC","MANA","MATIC","MKR","NEO","NEAR","OMG","ONT","OP","ORDI","PEPE","QNT","QTUM","RNDR",
+ "ROSE","RUNE","SAND","SEI","SHIB","SNX","SOL","STX","SUSHI","TIA","THETA","TRX","UNI","VET",
+ "XRP","XEM","XLM","XVS","ZEC","ZRX"
+]
+
+def clamp(x, lo, hi):
+    return lo if x < lo else hi if x > hi else x
+
+def ema(vals, n):
+    if len(vals) < n:
+        return None
+    k = 2 / (n + 1)
+    e = vals[0]
+    for v in vals[1:]:
+        e = v * k + e * (1 - k)
+    return e
+
+def rsi(closes, n=14):
+    if len(closes) < n + 1:
+        return None
+    gains = 0.0
+    losses = 0.0
+    for i in range(-n, 0):
+        diff = closes[i] - closes[i-1]
+        if diff >= 0:
+            gains += diff
+        else:
+            losses += -diff
+    if losses == 0:
+        return 100.0
+    rs = (gains / n) / (losses / n)
+    return 100 - (100 / (1 + rs))
+
+def atr(ohlcv, n=14):
+    if len(ohlcv) < n + 1:
+        return None
+    trs = []
+    for i in range(-n, 0):
+        h = ohlcv[i][2]
+        l = ohlcv[i][3]
+        pc = ohlcv[i-1][4]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    return sum(trs) / len(trs)
+
+def compute_signal(ohlcv):
+    closes = [x[4] for x in ohlcv]
+    last = closes[-1]
+    efast = ema(closes[-EMA_FAST*3:], EMA_FAST)  # janela maior pra estabilizar
+    eslow = ema(closes[-EMA_SLOW*3:], EMA_SLOW)
+    a = atr(ohlcv, ATR_LEN)
+    r = rsi(closes, RSI_LEN)
+
+    if last is None or efast is None or eslow is None or a is None or a <= 0:
+        return None
+
+    # viés simples por tendência (posicional)
+    bias_long = efast > eslow
+
+    stop_dist = a * STOP_ATR
+    target_dist = stop_dist * RR
+
+    if bias_long:
+        side = "LONG"
+        alvo = last + target_dist
+        ganho = (alvo / last - 1) * 100
+    else:
+        side = "SHORT"
+        alvo = last - target_dist
+        if alvo <= 0:
+            return None
+        ganho = (last / alvo - 1) * 100
+
+    ganho = clamp(ganho, 0.0, GANHO_MAXIMO_PCT)
+
+    # risco/probabilidade simplificada (somente visual)
+    # RSI muito esticado = risco maior
+    risco = "MÉDIO"
+    if (bias_long and r is not None and r > 72) or ((not bias_long) and r is not None and r < 28):
+        risco = "ALTO"
+    elif (bias_long and r is not None and r < 40) or ((not bias_long) and r is not None and r > 60):
+        risco = "BAIXO"
+
+    return {
+        "side": side,
+        "preco": float(last),
+        "alvo": float(alvo),
+        "ganho_pct": float(ganho),
+        "prazo_dias": prazo_dias,
+        "risco": risco
+    }
+
+def backtest_winrate(ohlcv):
+    # backtest: aplica a regra em cada candle histórico e vê se bateu alvo antes do stop em HOLD_DAYS
+    if len(ohlcv) < BACKTEST_DAYS + EMA_SLOW + ATR_LEN + HOLD_DAYS + 5:
+        return None
+
+    wins = 0
+    losses = 0
+
+    start = len(ohlcv) - BACKTEST_DAYS - HOLD_DAYS - 1
+    end = len(ohlcv) - HOLD_DAYS - 1
+
+    for t in range(start, end):
+        window = ohlcv[:t+1]
+        s = compute_signal(window)
+        if not s:
+            continue
+
+        entry = s["preco"]
+        side = s["side"]
+
+        # recalcula stop/alvo “puros” (sem clamp) para backtest
+        a = atr(window, ATR_LEN)
+        if a is None or a <= 0:
+            continue
+        stop_dist = a * STOP_ATR
+        target_dist = stop_dist * RR
+
+        if side == "LONG":
+            stop = entry - stop_dist
+            target = entry + target_dist
+            hit_target = False
+            hit_stop = False
+            for k in range(1, HOLD_DAYS+1):
+                hi = ohlcv[t+k][2]
+                lo = ohlcv[t+k][3]
+                if lo <= stop:
+                    hit_stop = True
+                    break
+                if hi >= target:
+                    hit_target = True
+                    break
+        else:
+            stop = entry + stop_dist
+            target = entry - target_dist
+            if target <= 0:
+                continue
+            hit_target = False
+            hit_stop = False
+            for k in range(1, HOLD_DAYS+1):
+                hi = ohlcv[t+k][2]
+                lo = ohlcv[t+k][3]
+                if hi >= stop:
+                    hit_stop = True
+                    break
+                if lo <= target:
+                    hit_target = True
+                    break
+
+        if hit_target:
+            wins += 1
+        elif hit_stop:
+            losses += 1
+
+    total = wins + losses
+    if total < 30:  # pouca amostra -> não confia
+        return None
+    return wins / total
+
+def prioridade(assertividade, ganho_pct, is_sinal):
+    if is_sinal:
+        return "ALTA" if (assertividade or 0) >= 0.72 and ganho_pct >= 6 else "MÉDIA"
+    return "BAIXA"
+
+
+# --- PRAZO ESTIMADO (dias) ---
+def estimar_prazo_dias(preco, alvo, ohlcv, n=14):
+    try:
+        if not preco or not alvo or not ohlcv or len(ohlcv) < (n+2):
+            return None
+        prev_close = None
+        trs = []
+        for row in ohlcv[-(n+2):]:
+            ts, o, h, l, c, v = row
+            if prev_close is None:
+                prev_close = c
+                continue
+            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
+            trs.append(tr)
+            prev_close = c
+        if not trs or not prev_close or prev_close <= 0:
+            return None
+        atr = sum(trs) / len(trs)
+        atr_pct = (atr / prev_close) * 100.0
+        if atr_pct <= 0:
+            return None
+        dist_pct = (abs(alvo - preco) / preco) * 100.0
+        dias = dist_pct / atr_pct
+        if dias < 1:
+            dias = 1
+        if dias > 30:
+            dias = 30
+        return round(dias, 1)
+    except Exception:
+        return None
+
+
+def main():
+    ex = ccxt.bitget({"enableRateLimit": True})
+    # dica: load_markets pode demorar, mas é essencial pra validar symbols
+    ex.load_markets()
+
+    now = datetime.now(TZ)
+    data = now.strftime("%Y-%m-%d")
+    hora = now.strftime("%H:%M")
+
+    rows = []
+    candidates = []  # para rankear sinal/watch
+
+    for c in COINS:
+        sym = f"{c}/USDT"
+        prazo_dias = estimar_prazo_dias(preco, alvo, ohlcv)
+
+        row = {
+            "par": c,
+            "side": "NÃO ENTRAR",
+            "preco": None,
+            "alvo": None,
+            "ganho_pct": 0.0,
+            "zona": "-",
+            "risco": "ALTO",
+            "prioridade": "BAIXA",
+            "data": data,
+            "hora": hora,
+            "erro": None
+        }
+
+        try:
+            if sym not in ex.markets:
+                row["zona"] = "ERRO"
+                row["erro"] = "SEM PAR NA CORRETORA"
+                # FINAL (regra oficial): SIDE só vira LONG/SHORT se ONLINE e ganho >= minimo
+                try:
+                    g = row.get("ganho_pct")
+                    z = row.get("zona")
+                    preco = row.get("preco")
+                    alvo  = row.get("alvo")
+                    if (z == "ONLINE") and (g is not None) and (g >= GANHO_MINIMO_PCT) and (preco not in (None,0)) and (alvo not in (None,0)):
+                        row["side"] = "LONG" if float(alvo) > float(preco) else "SHORT"
+                    else:
+                        row["side"] = "NÃO ENTRAR"
+                except Exception:
+                    row["side"] = "NÃO ENTRAR"
+                rows.append(row)
+                continue
+
+            ohlcv = ex.fetch_ohlcv(sym, timeframe=TIMEFRAME, limit=LIMIT)
+            if not ohlcv or len(ohlcv) < 80:
+                row["zona"] = "ERRO"
+                row["erro"] = "POUCOS DADOS"
+                rows.append(row)
+                continue
+
+            sig = compute_signal(ohlcv)
+            wr = backtest_winrate(ohlcv)
+
+            if sig:
+                row["preco"] = round(sig["preco"], 6)
+                row["alvo"] = round(sig["alvo"], 6)
+                row["ganho_pct"] = round(sig["ganho_pct"], 2)
+                row["risco"] = sig["risco"]
+                row["zona"] = "ONLINE"
+                row["assertividade"] = None if wr is None else round(wr * 100, 2)
+
+                # score pra rankear oportunidades (realista)
+                score = (wr if wr is not None else 0.0) * (row["ganho_pct"] / 100.0)
+
+                candidates.append((c, row, wr, score))
+            else:
+                row["zona"] = "ERRO"
+                row["erro"] = "FALHA NO CÁLCULO"
+                rows.append(row)
+
+        except Exception as e:
+            row["zona"] = "ERRO"
+            row["erro"] = str(e)[:160]
+            rows.append(row)
+
+    # rankear candidatos
+    candidates.sort(key=lambda x: x[3], reverse=True)
+
+    sinais = []
+    watch = []
+
+    for c, row, wr, score in candidates:
+        ganho = row["ganho_pct"]
+        a = wr if wr is not None else 0.0
+
+        # regras:
+        is_sinal = (ganho >= GANHO_MIN_SINAL) and (a >= ASSERT_MIN_SINAL)
+        is_watch = (ganho >= GANHO_MIN_WATCH) and (a >= ASSERT_MIN_WATCH)
+
+        if is_sinal and len(sinais) < MAX_SINAIS:
+            row["side"] = "LONG" if row["alvo"] and row["alvo"] > row["preco"] else "SHORT"
+            row["prioridade"] = prioridade(a, ganho, True)
+            sinais.append(row)
+        elif (not is_sinal) and is_watch and len(watch) < MAX_WATCH:
+            row["side"] = "LONG" if row["alvo"] and row["alvo"] > row["preco"] else "SHORT"
+            row["prioridade"] = "BAIXA"
+            row["zona"] = "WATCH"
+            watch.append(row)
+        else:
+            # sem oportunidade suficiente
+            # NÃO ENTRAR só quando não atende regra mínima
+            if (row.get("zona") in ("OFFLINE","ERRO")) or (row.get("ganho_pct") is None) or (row.get("ganho_pct") < GANHO_MINIMO_PCT):
+                row["side"] = "NÃO ENTRAR"
+            row["prioridade"] = "BAIXA"
+            rows.append(row)
+
+    # juntar tudo: primeiro sinais, depois watch, depois o resto
+    final = sinais + watch + rows
+
+    payload = {
+        "posicional": final,
+        "ultima_atualizacao": now.strftime("%Y-%m-%d %H:%M")
+    }
+
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    print(f"[OK] Atualizado: {payload['ultima_atualizacao']} | sinais:{len(sinais)} watch:{len(watch)} total:{len(final)}")
+
+if __name__ == "__main__":
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print("[ERRO NO LOOP]:", e)
+        time.sleep(300)  # 5 min

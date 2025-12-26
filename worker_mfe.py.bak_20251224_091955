@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+# worker_mfe.py - ENTRADA MFE (Posicional 1D)
+# - SEMPRE gera as 77 moedas no JSON (mesmo quando for "NÃO ENTRAR")
+# - "NÃO ENTRAR" somente quando ganho_pct < 3% (assertividade NÃO filtra)
+# - Alvo baseado em MFE histórico (máx movimento favorável em janela)
+# - Assertividade = probabilidade histórica aproximada do alvo (apenas visual)
+
+import json
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import ccxt
+
+OUTPUT_JSON = "/home/roteiro_ds/ENTRADA-MFE/entrada.json"
+
+# 77 moedas (as que você mandou)
+COINS = [
+  "AAVE","ADA","APE","APT","AR","ARB","ATOM","AVAX","AXS","BAT","BCH","BLUR","BNB","BONK","BTC",
+  "COMP","CRV","DASH","DGB","DENT","DOGE","DOT","EGLD","EOS","ETC","ETH","FET","FIL","FLOKI","FLOW",
+  "FTM","GALA","GLM","GRT","HBAR","IMX","INJ","IOST","ICP","KAS","KAVA","KSM","LINK","LTC","MANA",
+  "MATIC","MKR","NEO","NEAR","OMG","ONT","OP","ORDI","PEPE","QNT","QTUM","RNDR","ROSE","RUNE","SAND",
+  "SEI","SHIB","SNX","SOL","STX","SUSHI","TIA","THETA","TRX","UNI","VET","XRP","XEM","XLM","XVS","ZEC","ZRX"
+]
+
+TIMEFRAME = "1d"
+LOOKBACK = 300          # candles
+MFE_HORIZON = 14        # janela p/ MFE (dias)
+GANHO_MINIMO_PCT = 3.0  # regra de NÃO ENTRAR
+TARGET_PCTL = 0.60      # percentil do MFE p/ alvo (60% dá mais oportunidades)
+
+def _round_price(x: float) -> float:
+    try:
+        x = float(x)
+    except Exception:
+        return 0.0
+    ax = abs(x)
+    if ax == 0:
+        return 0.0
+    if ax >= 1:
+        d = 3
+    elif ax >= 0.01:
+        d = 6
+    elif ax >= 0.0001:
+        d = 8
+    else:
+        d = 10
+    return float(round(x, d))
+
+def criar_exchanges():
+    return {
+        "kucoin": ccxt.kucoin({"enableRateLimit": True}),
+        "gate":   ccxt.gateio({"enableRateLimit": True}),
+        "okx":    ccxt.okx({"enableRateLimit": True}),
+    }
+
+def get_ohlcv_multi(exchanges, symbol, timeframe=TIMEFRAME, limit=LOOKBACK):
+    series = []
+    for name, ex in exchanges.items():
+        try:
+            o = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if o and len(o) > 50:
+                series.append(o)
+        except Exception:
+            pass
+    if not series:
+        return None
+    m = min(len(x) for x in series)
+    series = [x[-m:] for x in series]
+
+    out = []
+    for i in range(m):
+        cands = [s[i] for s in series]
+        ts = cands[0][0]
+        o = sum(c[1] for c in cands) / len(cands)
+        h = sum(c[2] for c in cands) / len(cands)
+        l = sum(c[3] for c in cands) / len(cands)
+        cl = sum(c[4] for c in cands) / len(cands)
+        v = sum(c[5] for c in cands) / len(cands)
+        out.append([ts, o, h, l, cl, v])
+    return out
+
+def get_price_live(exchanges, symbol):
+    vals = []
+    for name, ex in exchanges.items():
+        try:
+            t = ex.fetch_ticker(symbol)
+            last = t.get("last") or t.get("close")
+            if last:
+                vals.append(float(last))
+        except Exception:
+            pass
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+def calc_ema(closes, period):
+    if len(closes) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = closes[0]
+    for c in closes[1:]:
+        ema = c * k + ema * (1 - k)
+    return ema
+
+def calc_atr(ohlcv, period=14):
+    if ohlcv is None or len(ohlcv) < period + 2:
+        return 0.0
+    trs = []
+    for i in range(1, len(ohlcv)):
+        _, _, h, l, c, _ = ohlcv[i]
+        _, _, _, _, pc, _ = ohlcv[i-1]
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    trs = trs[-period:]
+    return sum(trs) / len(trs) if trs else 0.0
+
+def detectar_tendencia(closes):
+    # simples e estável (igual ao estilo do outro projeto)
+    if len(closes) < 210:
+        return "NÃO ENTRAR"
+    ema50 = calc_ema(closes[-210:], 50)
+    ema200 = calc_ema(closes[-210:], 200)
+    if ema50 is None or ema200 is None:
+        return "NÃO ENTRAR"
+    roc = (closes[-1] - closes[-31]) / closes[-31] if closes[-31] else 0.0
+    if ema50 > ema200 and roc > 0:
+        return "LONG"
+    if ema50 < ema200 and roc < 0:
+        return "SHORT"
+    return "NÃO ENTRAR"
+
+def mfe_distribution(ohlcv, horizon=MFE_HORIZON):
+    # retorna 2 listas: mfe_long, mfe_short (fração, ex: 0.12 = 12%)
+    if ohlcv is None or len(ohlcv) < horizon + 30:
+        return [], []
+    mfeL, mfeS = [], []
+    for i in range(0, len(ohlcv) - horizon - 1):
+        entry = float(ohlcv[i][4])
+        if entry <= 0:
+            continue
+        window = ohlcv[i+1:i+1+horizon]
+        hi = max(float(c[2]) for c in window)
+        lo = min(float(c[3]) for c in window)
+        mfeL.append((hi - entry) / entry)
+        mfeS.append((entry - lo) / entry)
+    return mfeL, mfeS
+
+def pick_percentile(vals, p):
+    if not vals:
+        return 0.0
+    v = sorted([float(x) for x in vals if x is not None and x >= 0])
+    if not v:
+        return 0.0
+    idx = int(round((len(v) - 1) * p))
+    idx = max(0, min(idx, len(v) - 1))
+    return float(v[idx])
+
+def clamp(x, a, b):
+    return max(a, min(b, x))
+
+def main():
+    exchanges = criar_exchanges()
+    now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    data_str = now.strftime("%Y-%m-%d")
+    hora_str = now.strftime("%H:%M")
+
+    out = []
+    total_proc = 0
+
+    for coin in COINS:
+        symbol = f"{coin}/USDT"
+        total_proc += 1
+
+        # padrão: sempre gera linha
+        registro = {
+            "par": coin,
+            "modo": "POSICIONAL_MFE",
+            "sinal": "NÃO ENTRAR",
+            "preco": 0.0,
+            "alvo": 0.0,
+            "ganho_pct": 0.0,
+            "assert_pct": 55.0,
+            "data": data_str,
+            "hora": hora_str,
+        }
+
+        try:
+            ohlcv = get_ohlcv_multi(exchanges, symbol)
+            preco_live = get_price_live(exchanges, symbol)
+
+            if ohlcv is None or preco_live is None or float(preco_live) <= 0:
+                out.append(registro)
+                continue
+
+            preco_live = float(preco_live)
+            closes = [float(c[4]) for c in ohlcv if c and c[4] is not None]
+            side = detectar_tendencia(closes)
+
+            atr = calc_atr(ohlcv, 14)
+            atr_pct = (atr / preco_live) * 100.0 if preco_live > 0 else 0.0
+
+            mfeL, mfeS = mfe_distribution(ohlcv, MFE_HORIZON)
+
+            if side == "LONG":
+                target_frac = pick_percentile(mfeL[-180:], TARGET_PCTL)
+                alvo = preco_live * (1.0 + target_frac)
+                # proteção: pelo menos 1 ATR
+                if atr > 0 and alvo < (preco_live + 1.0 * atr):
+                    alvo = preco_live + 1.0 * atr
+
+                ganho_pct = abs(alvo - preco_live) / preco_live * 100.0
+
+                # assert visual: % de vezes que bateu esse alvo no histórico
+                base = mfeL[-180:] if len(mfeL) > 20 else mfeL
+                hits = sum(1 for x in base if x >= (abs(alvo - preco_live) / preco_live))
+                prob = (hits / len(base) * 100.0) if base else 55.0
+                prob = prob - clamp((atr_pct - 8.0) * 1.5, 0, 12)  # penaliza volatilidade alta
+                assert_pct = clamp(prob, 55.0, 90.0)
+
+            elif side == "SHORT":
+                target_frac = pick_percentile(mfeS[-180:], TARGET_PCTL)
+                alvo = preco_live * (1.0 - target_frac)
+                if atr > 0 and alvo > (preco_live - 1.0 * atr):
+                    alvo = preco_live - 1.0 * atr
+
+                ganho_pct = abs(alvo - preco_live) / preco_live * 100.0
+
+                base = mfeS[-180:] if len(mfeS) > 20 else mfeS
+                hits = sum(1 for x in base if x >= (abs(preco_live - alvo) / preco_live))
+                prob = (hits / len(base) * 100.0) if base else 55.0
+                prob = prob - clamp((atr_pct - 8.0) * 1.5, 0, 12)
+                assert_pct = clamp(prob, 55.0, 90.0)
+            else:
+                alvo = preco_live
+                ganho_pct = 0.0
+                assert_pct = 55.0
+
+            # regra oficial: NÃO ENTRAR somente por ganho < 3%
+            sinal_final = side if (side in ("LONG", "SHORT") and ganho_pct >= GANHO_MINIMO_PCT) else "NÃO ENTRAR"
+            if sinal_final == "NÃO ENTRAR":
+                alvo = preco_live
+                ganho_pct = 0.0
+                # mantém assert como “visual” (pode ficar 55)
+                assert_pct = 55.0 if side == "NÃO ENTRAR" else float(assert_pct)
+
+            registro.update({
+                "sinal": sinal_final,
+                "preco": _round_price(preco_live),
+                "alvo": _round_price(alvo),
+                "ganho_pct": float(round(ganho_pct, 2)),
+                "assert_pct": float(round(assert_pct, 2)),
+            })
+
+            out.append(registro)
+
+        except Exception:
+            out.append(registro)
+
+        time.sleep(0.12)
+
+    payload = {
+        "posicional": out,
+        "total_moedas": len(COINS),
+        "total_processadas": total_proc,
+        "ultima_atualizacao": now.strftime("%Y-%m-%d %H:%M"),
+    }
+
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    print(f"[OK] Atualizado: {payload['ultima_atualizacao']} | Total exibidas: {len(out)}")
+
+if __name__ == "__main__":
+    main()

@@ -1,29 +1,4 @@
 {
-  "posicional": [
-    {
-      "par": "BTC",
-      "side": "SHORT",
-      "preco": 86826.0,
-      "alvo": 80428.252828,
-      "ganho_pct": 7.37,
-      "zona": "VERDE",
-      "risco": "BAIXO",
-      "prioridade": "MÉDIA",
-      "data": "2025-12-18",
-      "hora": "06:10"
-    },
-    {
-      "par": "TRX",
-      "side": "LONG",
-      "preco": 0.277078,
-      "alvo": 0.294403,
-      "ganho_pct": 6.25,
-      "zona": "VERDE",
-      "risco": "BAIXO",
-      "prioridade": "MÉDIA",
-      "data": "2025-12-18",
-      "hora": "06:10"
-    }
-  ],
-  "ultima_atualizacao": "2025-12-18 06:10"
+  "posicional": [],
+  "ultima_atualizacao": "2025-12-26 15:31"
 }

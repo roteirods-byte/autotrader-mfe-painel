@@ -1,259 +1,276 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-worker_mfe.py
-AUTOTRADER – PAINEL DE ENTRADA MFE
-Autor: ChatGPT + Jorge
-Atualizado: 2025-12-05
-
-Fluxo:
-1. Carregar estudos MFE (mfe_estudos.csv)
-2. Preço médio Binance + Bybit
-3. Calcular 3 alvos p50 / p60 / p70
-4. Ganho LONG e SHORT (sempre POSITIVO)
-5. Escolher melhor lado
-6. Filtrar moedas com ganho ≥ 3%
-7. Calcular zona, risco e prioridade
-8. Salvar entrada.json no formato do painel MFE
-"""
-
-import json
-import csv
-import requests
+import os, json, csv, time, requests, tempfile
 from datetime import datetime
-import time
+from zoneinfo import ZoneInfo
 
-# ============================================================
-# CONFIGURAÇÕES GERAIS
-# ============================================================
+TZ_NAME = os.getenv("APP_TZ", "America/Sao_Paulo")
+TZ = ZoneInfo(TZ_NAME)
 
-# Caminho onde o painel MFE lê o JSON
-OUTPUT_JSON = "/home/roteiro_ds/autotrader-mfe-painel/entrada.json"
+ROOT = os.path.dirname(__file__)
+OUTPUT_JSON = os.getenv("OUTPUT_JSON", os.path.join(ROOT, "entrada.json"))
+MFE_CSV = os.getenv("MFE_CSV", "/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv")
+INTERVALO = int(os.getenv("INTERVALO", "300"))
+RUN_ONCE = os.getenv("RUN_ONCE", "0") == "1"
 
-# Caminho do arquivo de estudos
-MFE_CSV = "/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv"
+GAIN_MIN = float(os.getenv("GAIN_MIN", "3.0"))  # filtro único
+PRICE_CACHE_FILE = os.getenv("PRICE_CACHE_FILE", os.path.join(ROOT, "precos_cache.json"))
 
-# Tempo entre ciclos (5 minutos)
-INTERVALO = 300
-
-# ============================================================
-# UNIVERSO DAS 50 MOEDAS SELECIONADAS
-# ============================================================
-
-MOEDAS_50 = [
-"BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","TRX",
-"LINK","MATIC","ATOM","LTC","BCH","FIL","ICP","APT","ARB","SUI",
-"OP","INJ","RUNE","FET","TIA","SEI","NEAR","AAVE","LDO","UNI",
-"ETC","FTM","MKR","SNX","IMX","WIF","PEPE","POL","AXS","FLUX",
-"ALGO","GALA","EGLD","KAS","MINA","AR","PYTH","JTO","JUP","TON"
+PARES = [
+    "AAVE","ADA","APE","APT","AR","ARB","ATOM","AVAX","AXS","BAT","BCH","BLUR","BNB","BONK","BTC",
+    "COMP","CRV","DASH","DGB","DENT","DOGE","DOT","EGLD","EOS","ETC","ETH","FET","FIL","FLOKI","FLOW",
+    "FTM","GALA","GLM","GRT","HBAR","IMX","INJ","IOST","ICP","KAS","KAVA","KSM","LINK","LTC","MANA",
+    "MATIC","MKR","NEO","NEAR","OMG","ONT","OP","ORDI","PEPE","QNT","QTUM","RNDR","ROSE","RUNE","SAND",
+    "SEI","SHIB","SNX","SOL","STX","SUSHI","TIA","THETA","TRX","UNI","VET","XRP","XEM","XLM","XVS",
+    "ZEC","ZRX"
 ]
 
-# ============================================================
-# OBTER PREÇO MÉDIO (BINANCE + BYBIT)
-# ============================================================
+PRECO_CACHE = {}
+
+def load_preco_cache():
+    global PRECO_CACHE
+    try:
+        if os.path.exists(PRICE_CACHE_FILE):
+            with open(PRICE_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                PRECO_CACHE = {k: float(v) for k, v in data.items() if v}
+    except:
+        pass
+
+def save_preco_cache():
+    try:
+        tmp = PRICE_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(PRECO_CACHE, f, ensure_ascii=False)
+        os.replace(tmp, PRICE_CACHE_FILE)
+    except:
+        pass
+
+def atualizar_precos_bulk(pares):
+    """
+    Robusto:
+    - tenta 3x
+    - se falhar, mantém cache anterior (não zera)
+    - se sucesso, salva cache em disco
+    """
+    global PRECO_CACHE
+    cache_final = {}
+    CHUNK = 25
+
+    for tentativa in range(1, 4):
+        try:
+            cache_final = {}
+            for i in range(0, len(pares), CHUNK):
+                parte = pares[i:i+CHUNK]
+                url = "https://min-api.cryptocompare.com/data/pricemulti"
+                qs = {"fsyms": ",".join(parte), "tsyms": "USD"}
+                resp = requests.get(url, params=qs, timeout=8).json()
+                for sym in parte:
+                    v = resp.get(sym, {}).get("USD", 0)
+                    try:
+                        cache_final[sym] = float(v) if v else 0.0
+                    except:
+                        cache_final[sym] = 0.0
+
+            nonzero = sum(1 for v in cache_final.values() if v and v > 0)
+            if nonzero < 10:
+                raise RuntimeError(f"precos_insuficientes nonzero={nonzero}")
+
+            PRECO_CACHE = cache_final
+            save_preco_cache()
+            return True
+        except Exception as e:
+            if tentativa == 3:
+                return False
+            time.sleep(0.6)
 
 def preco_atual(par):
-    """Retorna o preço médio entre Binance e Bybit."""
-    simbolo = par + "USDT"
-
-    # Binance
-    url_b = f"https://api.binance.com/api/v3/ticker/price?symbol={simbolo}"
     try:
-        p_b = float(requests.get(url_b, timeout=3).json().get("price", 0))
+        return float(PRECO_CACHE.get(par, 0.0) or 0.0)
     except:
-        p_b = 0
+        return 0.0
 
-    # Bybit
-    url_y = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={par}USDT"
-    try:
-        r = requests.get(url_y, timeout=3).json()
-        p_y = float(r["result"]["list"][0]["lastPrice"])
-    except:
-        p_y = 0
-
-    # Se uma falhar, usa só a outra
-    if p_b > 0 and p_y > 0:
-        return (p_b + p_y) / 2
-    if p_b > 0:
-        return p_b
-    return p_y
-
-
-# ============================================================
-# CARREGAR ESTUDOS MFE
-# ============================================================
-
-def carregar_mfe():
-    """
-    Lê o CSV com percentis MFE e transforma em:
-    dados[PAR][SIDE][PERCENTIL] = alvo_pct
-    """
-    dados = {}
-
-    with open(MFE_CSV, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter=";")
-        for row in reader:
-            par = row["PAR"]
-            side = row["LADO"]
-            pct = float(row["PERCENTIL"])
-            alvo_pct = float(row["ALVO_PCT"])
-
-            if par not in dados:
-                dados[par] = {"LONG": {}, "SHORT": {}}
-
-            dados[par][side][pct] = alvo_pct
-
-    return dados
-
-
-# ============================================================
-# CLASSIFICAÇÕES
-# ============================================================
-
-RISCO_BAIXO = {"BTC","ETH","BNB","XRP","ADA","SOL","TRX","LTC","LINK","ATOM","NEAR","OP","UNI","POL"}
-RISCO_ALTO  = {"ICP","FET","FLUX","PEPE","WIF","GALA","TNSR","SEI","AXS","RUNE"}
-
-def classificar_risco(par):
-    if par in RISKO_BAIXO:
-        return "BAIXO"
-    if par in RISKO_ALTO:
-        return "ALTO"
+def risco_por_ativo(par):
+    baixo = {"BTC","ETH","BNB","XRP","ADA","SOL","DOGE","TRX","LTC","LINK","DOT","AVAX","ATOM","BCH"}
+    alto  = {"PEPE","BONK","FLOKI","SHIB","DENT","DGB","IOST","ORDI"}
+    if par in baixo: return "BAIXO"
+    if par in alto:  return "ALTO"
     return "MÉDIO"
 
-def classificar_zona(ganho):
-    if ganho < 3:
-        return "AMARELA"
-    if 3 <= ganho <= 8:
-        return "VERDE"
+def peso_risco(risco):
+    if risco == "BAIXO": return 1.00
+    if risco == "MÉDIO": return 0.92
+    return 0.82
+
+def ler_estudos_csv(caminho):
+    estudos = {}
+    with open(caminho, "r", encoding="utf-8") as f:
+        rd = csv.DictReader(f, delimiter=";")
+        for r in rd:
+            par = (r.get("PAR") or "").strip().upper()
+            lado = (r.get("LADO") or "").strip().upper()
+            perc = (r.get("PERCENTIL") or "").strip()
+            alvo = (r.get("ALVO_PCT") or "").strip()
+            if not par or lado not in ("LONG","SHORT") or perc not in ("50","60","70"):
+                continue
+            try:
+                alvo_f = float(alvo)
+            except:
+                continue
+            estudos.setdefault(par, {}).setdefault(lado, {})[f"P{perc}"] = alvo_f
+    return estudos
+
+def alvo_preco(preco, alvo_pct, side):
+    if preco <= 0 or alvo_pct <= 0:
+        return 0.0
+    if side == "LONG":
+        return preco * (1 + alvo_pct/100.0)
+    return preco * (1 - alvo_pct/100.0)
+
+def prob_atingir_pct(mfe_side, pct):
+    p50 = float(mfe_side.get("P50", 0) or 0)
+    p60 = float(mfe_side.get("P60", 0) or 0)
+    p70 = float(mfe_side.get("P70", 0) or 0)
+
+    if pct <= 0: return 100.0
+    if p50 <= 0: return 0.0
+    if p60 <= p50: p60 = p50
+    if p70 <= p60: p70 = p60
+
+    if pct <= p50:
+        cdf = 0.5 * (pct / p50)
+    elif pct <= p60:
+        cdf = 0.5 + 0.1 * ((pct - p50) / (p60 - p50 + 1e-9))
+    elif pct <= p70:
+        cdf = 0.6 + 0.1 * ((pct - p60) / (p70 - p60 + 1e-9))
+    else:
+        cdf = min(0.95, 0.7 + 0.25 * ((pct - p70) / (p70 + 1e-9)))
+
+    prob = max(0.0, 1.0 - cdf)
+    return round(prob * 100.0, 2)
+
+def zona_por_ganho(ganho):
+    if ganho >= 6: return "VERDE"
+    if ganho >= 3: return "AMARELA"
     return "VERMELHA"
 
-def classificar_prioridade(zona, ganho):
-    # MODELO C
-    if zona == "VERDE" and ganho >= 8:
-        return "ALTA"
-    if zona == "VERDE" and ganho >= 4:
-        return "MÉDIA"
-    if zona == "AMARELA" and ganho >= 3:
-        return "BAIXA"
-    return "NÃO OPERAR"
-
-
-# ============================================================
-# PRINCIPAL: CALCULAR SINAL PARA CADA MOEDA
-# ============================================================
+def prioridade_por_ganho(ganho):
+    if ganho >= 8: return "ALTA"
+    if ganho >= 5: return "MÉDIA"
+    return "BAIXA"
 
 def calcular_sinal(par, mfe):
-    """
-    Retorna dicionário com sinal final da moeda:
-    {
-      par, side, preco, alvo, ganho_pct, zona, risco, prioridade, data, hora
-    }
-    """
-
-    # Preço real
     preco = preco_atual(par)
     if preco <= 0:
         return None
 
-    # PRECISA existir MFE para LONG e SHORT
-    if par not in mfe:
+    L = mfe.get("LONG") or {}
+    S = mfe.get("SHORT") or {}
+    if not L and not S:
         return None
 
-    long_pct = mfe[par]["LONG"]
-    short_pct = mfe[par]["SHORT"]
+    # P60 ESTRITO
+    p60L = float(L.get("P60", 0) or 0)
+    p60S = float(S.get("P60", 0) or 0)
 
-    # Se faltar percentis, ignora moeda
-    if 50.0 not in long_pct or 60.0 not in long_pct or 70.0 not in long_pct:
+    okL = p60L >= GAIN_MIN and p60L > 0
+    okS = p60S >= GAIN_MIN and p60S > 0
+    if not okL and not okS:
         return None
-    if 50.0 not in short_pct or 60.0 not in short_pct or 70.0 not in short_pct:
-        return None
 
-    # Calcula alvos
-    alvo_long_70  = preco * (1 + long_pct[70.0] / 100)
-    alvo_short_70 = preco * (1 - short_pct[70.0] / 100)
+    risco = risco_por_ativo(par)
+    w = peso_risco(risco)
 
-    # Ganhos sempre positivos:
-    ganho_long  = (alvo_long_70  - preco) / preco * 100
-    ganho_short = (preco - alvo_short_70) / preco * 100
+    aL = prob_atingir_pct(L, GAIN_MIN) if okL else 0.0
+    aS = prob_atingir_pct(S, GAIN_MIN) if okS else 0.0
 
-    # Escolher lado
-    if ganho_long >= ganho_short:
-        side = "LONG"
-        alvo = alvo_long_70
-        ganho = ganho_long
+    scoreL = (p60L * (aL/100.0) * w) if okL else 0.0
+    scoreS = (p60S * (aS/100.0) * w) if okS else 0.0
+
+    if okL and (not okS or scoreL >= scoreS):
+        side, alvo_pct, ganho, assertiv, score = "LONG", p60L, p60L, aL, scoreL
     else:
-        side = "SHORT"
-        alvo = alvo_short_70
-        ganho = ganho_short
+        side, alvo_pct, ganho, assertiv, score = "SHORT", p60S, p60S, aS, scoreS
 
-    # Filtrar ganho mínimo de 3%
-    if ganho < 3:
-        return None
-
-    # Zona, risco, prioridade
-    zona = classificar_zona(ganho)
-    risco = classificar_risco(par)
-    prioridade = classificar_prioridade(zona, ganho)
-
-    if prioridade == "NÃO OPERAR":
-        return None
-
-    # Data e hora
-    agora = datetime.now()
-    data = agora.strftime("%Y-%m-%d")
-    hora = agora.strftime("%H:%M")
+    alvo = alvo_preco(preco, alvo_pct, side)
+    agora = datetime.now(TZ)
 
     return {
         "par": par,
         "side": side,
-        "preco": round(preco, 3),
-        "alvo": round(alvo, 3),
-        "ganho_pct": round(ganho, 2),
-        "zona": zona,
+        "preco": float(preco),
+        "alvo": float(alvo),
+        "ganho_pct": round(float(ganho), 2),
+        "assertividade": float(assertiv),
+        "score": round(float(score), 4),
+        "zona": zona_por_ganho(ganho),
         "risco": risco,
-        "prioridade": prioridade,
-        "data": data,
-        "hora": hora
+        "prioridade": prioridade_por_ganho(ganho),
+        "data": agora.strftime("%Y-%m-%d"),
+        "hora": agora.strftime("%H:%M")
     }
 
-
-# ============================================================
-# LOOP PRINCIPAL
-# ============================================================
+def write_json_atomic(path, obj):
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_entrada_", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except:
+            pass
 
 def loop():
-    print("Worker MFE iniciado…")
-
+    load_preco_cache()
+    print(f"[MFE] TZ={TZ_NAME} | OUTPUT_JSON={OUTPUT_JSON} | MFE_CSV={MFE_CSV} | GAIN_MIN={GAIN_MIN}")
     while True:
         try:
-            mfe = carregar_mfe()
-            sinais = []
+            estudos = ler_estudos_csv(MFE_CSV)
 
-            for par in MOEDAS_50:
-                sinal = calcular_sinal(par, mfe)
-                if sinal:
-                    sinais.append(sinal)
+            ok_price = atualizar_precos_bulk(PARES)
+            nonzero = sum(1 for v in PRECO_CACHE.values() if v and v > 0)
 
-            # Ordenar por maior ganho
-            sinais.sort(key=lambda x: x["ganho_pct"], reverse=True)
+            if not ok_price and nonzero < 10:
+                # Sem preços -> não sobrescreve o JSON bom
+                print(f"[WARN] Falha preços (cache insuficiente). Mantendo último entrada.json. nonzero={nonzero}")
+            else:
+                sinais = []
+                for par in PARES:
+                    mfe = estudos.get(par)
+                    if not mfe:
+                        continue
+                    s = calcular_sinal(par, mfe)
+                    if s:
+                        sinais.append(s)
 
-            # Gravar JSON
-            saida = {
-                "posicional": sinais,
-                "ultima_atualizacao": datetime.now().strftime("%Y-%m-%d %H:%M")
-            }
+                # rank por score
+                rank_map = {}
+                for i, it in enumerate(sorted(sinais, key=lambda x: x["score"], reverse=True), start=1):
+                    rank_map[it["par"]] = i
+                for it in sinais:
+                    it["rank"] = rank_map.get(it["par"], 999)
 
-            with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-                json.dump(saida, f, indent=2)
+                sinais.sort(key=lambda x: x["par"])
 
-            print(f"[OK] Atualizado: {saida['ultima_atualizacao']} | Total exibidas: {len(sinais)}")
+                saida = {
+                    "posicional": sinais,
+                    "ultima_atualizacao": datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
+                }
+                write_json_atomic(OUTPUT_JSON, saida)
+                print(f"[OK] Atualizado: {saida['ultima_atualizacao']} | Total exibidas: {len(sinais)}")
 
         except Exception as e:
             print("ERRO NO LOOP:", e)
 
+        if RUN_ONCE:
+            break
         time.sleep(INTERVALO)
-
 
 if __name__ == "__main__":
     loop()
