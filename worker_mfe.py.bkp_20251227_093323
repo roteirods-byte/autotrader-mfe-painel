@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+import os, sys, json, csv, time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+TZ = os.environ.get("APP_TZ", "America/Sao_Paulo")
+OUTPUT_JSON = os.environ.get("OUTPUT_JSON", "/home/roteiro_ds/ENTRADA-MFE/entrada.json")
+MFE_CSV = os.environ.get("MFE_CSV", "/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv")
+
+GAIN_MIN = float(os.environ.get("GAIN_MIN", "3.0"))
+ASSERT_MIN = float(os.environ.get("ASSERT_MIN", "65.0"))
+
+def now_str():
+  dt = datetime.now(ZoneInfo(TZ))
+  return dt.strftime("%Y-%m-%d %H:%M")
+
+def to_float(x):
+  try:
+    if x is None: return None
+    s = str(x).strip().replace(",", ".")
+    if s == "": return None
+    return float(s)
+  except:
+    return None
+
+def atomic_write_json(path, obj):
+  tmp = f"{path}.tmp"
+  data = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+  with open(tmp, "w", encoding="utf-8") as f:
+    f.write(data)
+    f.flush()
+    os.fsync(f.fileno())
+  os.replace(tmp, path)
+
+def sniff_delimiter(file_path):
+  with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+    sample = f.read(4096)
+  try:
+    dialect = csv.Sniffer().sniff(sample, delimiters=[",",";","\t","|"])
+    return dialect.delimiter
+  except:
+    return ","
+
+def norm_key(k):
+  return (k or "").strip().upper()
+
+def pick(row, *keys):
+  # tenta várias chaves possíveis
+  for k in keys:
+    for rk in row.keys():
+      if norm_key(rk) == norm_key(k):
+        return row.get(rk)
+  return None
+
+def main():
+  ts = now_str()
+
+  # se der erro, NÃO destrói o arquivo atual
+  try:
+    delim = sniff_delimiter(MFE_CSV)
+    with open(MFE_CSV, "r", encoding="utf-8", errors="ignore", newline="") as f:
+      reader = csv.DictReader(f, delimiter=delim)
+      rows = list(reader)
+
+    out = []
+    for r in rows:
+      par = (pick(r, "PAR", "MOEDA", "COIN") or "").strip().upper()
+      side = (pick(r, "SIDE", "SINAL", "POSICAO") or "").strip().upper()
+
+      ganho = to_float(pick(r, "GANHO_PCT", "GANHO %", "GANHO", "PCT", "GAIN_PCT"))
+      assertiv = to_float(pick(r, "ASSERTIVIDADE", "ACERTO", "ASSERT", "WINRATE"))
+
+      # filtros
+      if side not in ("LONG", "SHORT"):
+        continue
+      if ganho is None or ganho < GAIN_MIN:
+        continue
+      if assertiv is None or assertiv < ASSERT_MIN:
+        continue
+
+      preco = to_float(pick(r, "PRECO", "PREÇO", "PRICE"))
+      alvo  = to_float(pick(r, "ALVO", "TARGET"))
+      zona  = (pick(r, "ZONA") or "").strip().upper()
+      risco = (pick(r, "RISCO") or "").strip().upper()
+      prio  = (pick(r, "PRIORIDADE", "PRIO") or "").strip().upper()
+      data  = (pick(r, "DATA") or "").strip()
+      hora  = (pick(r, "HORA") or "").strip()
+
+      out.append({
+        "par": par,
+        "side": side,
+        "preco": round(preco, 3) if isinstance(preco, float) else preco,
+        "alvo": round(alvo, 3) if isinstance(alvo, float) else alvo,
+        "ganho_pct": round(ganho, 2) if isinstance(ganho, float) else ganho,
+        "assertividade": round(assertiv, 2) if isinstance(assertiv, float) else assertiv,
+        "zona": zona,
+        "risco": risco,
+        "prioridade": prio,
+        "data": data,
+        "hora": hora
+      })
+
+    payload = {
+      "posicional": out,
+      "ultima_atualizacao": ts,
+      "gain_min": GAIN_MIN,
+      "assert_min": ASSERT_MIN,
+      "total_sinais": len(out)
+    }
+
+    atomic_write_json(OUTPUT_JSON, payload)
+    # backup do último bom
+    atomic_write_json(OUTPUT_JSON + ".lastgood", payload)
+
+    print(f"[OK] Atualizado: {ts} | Total sinais: {len(out)}")
+    return 0
+
+  except Exception as e:
+    print(f"[ERRO] Falha no worker: {e}", file=sys.stderr)
+    return 0  # não derruba o timer, mantém último arquivo bom
+
+if __name__ == "__main__":
+  sys.exit(main())

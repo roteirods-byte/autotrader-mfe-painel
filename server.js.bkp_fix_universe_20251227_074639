@@ -1,0 +1,181 @@
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const express = require("express");
+
+const app = express();
+const PORT = Number(process.env.PORT || 8082);
+
+const ROOT = __dirname;
+const INDEX_HTML = path.join(ROOT, "index.html");
+
+// arquivos locais do painel
+const ENTRADA_PATH = process.env.ENTRADA_JSON || path.join(ROOT, "entrada.json");
+const PRECOS_CACHE_PATH = process.env.PRECOS_CACHE_JSON || path.join(ROOT, "precos_cache.json");
+
+// fonte do universo (lista de pares) — não mexe em cálculo
+const MFE_CSV = process.env.MFE_CSV || "/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv";
+
+// cache interno (blindagem)
+let LAST_NONEMPTY = null;
+
+function brNowParts() {
+  // data/hora em São Paulo
+  const d = new Date();
+  const fmt = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+  const parts = fmt.formatToParts(d);
+  const get = (t) => (parts.find(p => p.type === t)?.value || "");
+  const date = `${get("year")}-${get("month")}-${get("day")}`;
+  const time = `${get("hour")}:${get("minute")}`;
+  return { date, time };
+}
+
+function safeReadText(p) {
+  return fs.readFileSync(p, "utf8");
+}
+
+function safeReadJson(p) {
+  const raw = safeReadText(p).trim();
+  if (!raw) throw new Error("arquivo_vazio");
+  return JSON.parse(raw);
+}
+
+function readUniverseFromCSV() {
+  try {
+    const raw = safeReadText(MFE_CSV);
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length <= 1) return [];
+    const out = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(",");
+      const par = (cols[0] || "").trim().toUpperCase();
+      if (par && par !== "PAR") out.push(par);
+    }
+    // único + ordenado
+    return Array.from(new Set(out)).sort((a,b)=>a.localeCompare(b));
+  } catch (e) {
+    return [];
+  }
+}
+
+function readUniverseFromPrecosCache() {
+  try {
+    const obj = safeReadJson(PRECOS_CACHE_PATH);
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      return Object.keys(obj).map(k => k.toUpperCase()).sort((a,b)=>a.localeCompare(b));
+    }
+    return [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function readPriceMap() {
+  try {
+    const obj = safeReadJson(PRECOS_CACHE_PATH);
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
+    return {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function buildSyntheticRows() {
+  const uni = readUniverseFromCSV();
+  const uni2 = uni.length ? uni : readUniverseFromPrecosCache();
+  const { date, time } = brNowParts();
+  const priceMap = readPriceMap();
+
+  const rows = [];
+  for (const par of uni2) {
+    const p = priceMap[par] ?? priceMap[par.toLowerCase()] ?? "";
+    rows.push({
+      par,
+      side: "NÃO ENTRAR",
+      preco: p === "" ? "" : Number(p),
+      alvo: "",
+      ganho_pct: "",
+      assertividade: "",
+      score: "",
+      zona: "",
+      risco: "",
+      prioridade: "",
+      data: date,
+      hora: time
+    });
+  }
+  return rows;
+}
+
+app.get("/", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.sendFile(INDEX_HTML);
+});
+
+app.get("/health", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    entrada_exists: fs.existsSync(ENTRADA_PATH),
+    csv_exists: fs.existsSync(MFE_CSV),
+    precos_cache_exists: fs.existsSync(PRECOS_CACHE_PATH)
+  });
+});
+
+app.get("/api/entrada", (req, res) => {
+  res.set("Cache-Control", "no-store");
+
+  try {
+    const data = safeReadJson(ENTRADA_PATH);
+    const rows = Array.isArray(data.posicional) ? data.posicional : [];
+
+    // se tem sinal, guarda cache e devolve normal
+    if (rows.length > 0) {
+      LAST_NONEMPTY = data;
+      return res.json({ ...data, stale: false });
+    }
+
+    // sem sinal: devolve lista completa (NÃO ENTRAR) — painel nunca fica vazio
+    const synthetic = buildSyntheticRows();
+    const ua = (data.ultima_atualizacao ?? null);
+
+    return res.json({
+      ...data,
+      ultima_atualizacao: ua,
+      posicional: synthetic,
+      total_sinais: 0,
+      stale: false,
+      modo: "SEM_SINAL_EXIBE_LISTA"
+    });
+  } catch (e) {
+    // erro lendo JSON: usa último bom, se existir
+    if (LAST_NONEMPTY) return res.json({ ...LAST_NONEMPTY, stale: true, erro: "fallback_last_ok" });
+
+    // se não tem último bom: ainda assim devolve lista completa
+    const synthetic = buildSyntheticRows();
+    const { date, time } = brNowParts();
+
+    return res.json({
+      posicional: synthetic,
+      ultima_atualizacao: `${date} ${time}`,
+      total_sinais: 0,
+      stale: true,
+      modo: "FALLBACK_SINTETICO"
+    });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`[MFE] Painel ouvindo na porta ${PORT}`);
+  console.log(`[MFE] ENTRADA_JSON=${ENTRADA_PATH}`);
+  console.log(`[MFE] MFE_CSV=${MFE_CSV}`);
+});

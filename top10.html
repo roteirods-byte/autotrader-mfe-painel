@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>TOP 10 - ENTRADA MFE</title>
+<style>
+body{background:#0c1a2b;color:#fff;font-family:Arial;margin:0;padding:20px}
+h1{color:#ff9f1c;margin:0 0 10px}
+small{opacity:.95}
+table{width:100%;border-collapse:collapse;margin-top:15px}
+th,td{border:1px solid rgba(255,255,255,.15);padding:10px;text-align:center}
+th{color:#ff9f1c}
+
+.badgeLong{color:#00ff66;font-weight:bold}
+.badgeShort{color:#ff3b3b;font-weight:bold}
+
+/* GANHO % */
+.gPos{color:#00ff66;font-weight:bold}
+.gNeg{color:#ff3b3b;font-weight:bold}
+
+/* ZONA */
+.zVERDE{color:#00ff66;font-weight:bold}
+.zAMARELA{color:#ffd166;font-weight:bold}
+.zVERMELHA{color:#ff3b3b;font-weight:bold}
+
+/* RISCO */
+.rBAIXO{color:#00ff66;font-weight:bold}
+.rMEDIO{color:#ffd166;font-weight:bold}
+.rALTO{color:#ff3b3b;font-weight:bold}
+
+/* PRIORIDADE */
+.pALTA{color:#00ff66;font-weight:bold}
+.pMEDIA{color:#ffd166;font-weight:bold}
+.pBAIXA{color:#ff3b3b;font-weight:bold}
+</style>
+</head>
+<body>
+<h1>TOP 10 - ENTRADA MFE (POSICIONAL)</h1>
+<small id="meta">carregando...</small>
+
+<table>
+<thead>
+<tr>
+<th>PAR</th><th>SIDE</th><th>PREÇO</th><th>ALVO</th><th>GANHO %</th><th>ZONA</th><th>RISCO</th><th>PRIORIDADE</th><th>DATA</th><th>HORA</th>
+</tr>
+</thead>
+<tbody id="tb"></tbody>
+</table>
+
+<script>
+function clsZona(z){
+  z = (z||"").toUpperCase();
+  if(z.includes("VERDE")) return "zVERDE";
+  if(z.includes("AMARE")) return "zAMARELA";
+  if(z.includes("VERMEL")) return "zVERMELHA";
+  return "";
+}
+function clsRisco(r){
+  r = (r||"").toUpperCase();
+  if(r.includes("BAIX")) return "rBAIXO";
+  if(r.includes("MÉD") || r.includes("MED")) return "rMEDIO";
+  if(r.includes("ALT")) return "rALTO";
+  return "";
+}
+function clsPrio(p){
+  p = (p||"").toUpperCase();
+  if(p.includes("ALTA")) return "pALTA";
+  if(p.includes("MÉD") || p.includes("MED")) return "pMEDIA";
+  if(p.includes("BAIX")) return "pBAIXA";
+  return "";
+}
+
+async function load(){
+  const r = await fetch('/api/top10', {cache:'no-store'});
+  const j = await r.json();
+
+  const moedas = (j.total_universo ?? 77);  // 77 fixo (se depois quiser dinâmico, eu ajusto o gerador)
+  const sinais = (j.total_sinais_top ?? 0);
+  const exibindo = (j.total_top ?? (j.top10||[]).length);
+
+  document.getElementById('meta').textContent =
+    `Automação OK • AGORA (BRT): ${j.agora_brt || '-'} • ÚLTIMO CÁLCULO (BRT): ${j.ultimo_calculo_brt || '-'} • MOEDAS: ${moedas} • SINAIS (LONG/SHORT): ${sinais} • EXIBINDO: ${exibindo}`;
+
+  const tb = document.getElementById('tb');
+  tb.innerHTML = '';
+
+  (j.top10||[]).forEach(it=>{
+    const side = (it.side||'').toUpperCase();
+    const clsSide = side==='LONG' ? 'badgeLong' : (side==='SHORT' ? 'badgeShort' : '');
+
+    const g = Number(it.ganho_pct ?? 0);
+    const clsG = (g >= 0) ? 'gPos' : 'gNeg';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${it.par||''}</td>
+      <td class="${clsSide}">${it.side||''}</td>
+      <td>${it.preco ?? ''}</td>
+      <td>${it.alvo ?? ''}</td>
+      <td class="${clsG}">${it.ganho_pct ?? ''}</td>
+      <td class="${clsZona(it.zona)}">${it.zona ?? ''}</td>
+      <td class="${clsRisco(it.risco)}">${it.risco ?? ''}</td>
+      <td class="${clsPrio(it.prioridade)}">${it.prioridade ?? ''}</td>
+      <td>${it.data ?? ''}</td>
+      <td>${it.hora ?? ''}</td>`;
+    tb.appendChild(tr);
+  });
+}
+load();
+setInterval(load, 30_000);
+</script>
+</body>
+</html>

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Painel MFE Posicional</title>
+  <style>
+    body{margin:0;background:#062a38;font-family:Arial,Helvetica,sans-serif;color:#fff}
+    .wrap{max-width:1200px;margin:30px auto;padding:0 18px}
+    h1{margin:0 0 8px 0;text-align:center;color:#ff8c2a;font-size:28px}
+    .sub{margin:0 0 18px 0;text-align:center;font-size:12px;opacity:.9}
+    .card{background:#083244;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,.25);padding:14px 14px 6px}
+    .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:12px}
+    .pill{padding:4px 10px;border-radius:999px;font-weight:700}
+    .ok{background:#0a7a4f}
+    .bad{background:#b61f1f}
+    table{width:100%;border-collapse:collapse}
+    thead th{color:#ff8c2a;font-size:12px;text-align:left;padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.12)}
+    tbody td{padding:8px;border-bottom:1px solid rgba(255,255,255,.08);font-size:12px}
+    .verde{color:#00ff99;font-weight:700}
+    .vermelho{color:#ff4d4d;font-weight:700}
+    .muted{opacity:.75}
+    .err{color:#ff6b6b}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Painel MFE Posicional — Decisão de Entradas</h1>
+    <p class="sub">Fonte: <b>/api/mfe</b> | Colunas simplificadas</p>
+
+    <div class="card">
+      <div class="top">
+        <div class="muted">Atualiza automaticamente a cada 5s</div>
+        <div id="status" class="pill bad">Desconectado</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>PAR</th>
+            <th>SIDE</th>
+            <th>PREÇO</th>
+            <th>ALVO</th>
+            <th>GANHO%</th>
+            <th>PRAZO(D)</th>
+            <th>ASSERT%</th>
+            <th>DATA</th>
+            <th>HORA</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr><td colspan="9" class="muted">Carregando...</td></tr>
+        </tbody>
+      </table>
+      <div id="msg" class="muted" style="padding:10px 2px 12px 2px"></div>
+    </div>
+  </div>
+
+<script>
+const tbody = document.getElementById("tbody");
+const statusEl = document.getElementById("status");
+const msgEl = document.getElementById("msg");
+
+function fmt3(x){
+  const n = Number(x);
+  if (!isFinite(n)) return "-";
+  return n.toFixed(3);
+}
+function fmtPct2(x){
+  const n = Number(x);
+  if (!isFinite(n)) return "-";
+  return n.toFixed(2) + " %";
+}
+function fmt1(x){
+  const n = Number(x);
+  if (!isFinite(n)) return "-";
+  return n.toFixed(1);
+}
+
+function setStatus(ok, text){
+  statusEl.className = "pill " + (ok ? "ok" : "bad");
+  statusEl.textContent = text;
+}
+
+function render(rows){
+  tbody.innerHTML = "";
+  if (!rows || !rows.length){
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="9" class="muted">Sem dados no momento.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+
+  // ordena: ALFABÉTICO (PAR)
+  const sorted = rows.slice().sort((a,b)=> String(a.par||"").localeCompare(String(b.par||""), "pt-BR"));
+
+  for (const item of sorted){
+    const tr = document.createElement("tr");
+
+    const par = item.par ?? "-";
+    const side = item.side ?? "NÃO ENTRAR";
+
+    const ganho = Number(item.ganho_pct);
+    const prazo = (item.prazo_dias ?? item.prazo ?? null); // aceita prazo_dias se existir
+    const assertv = (item.assert_pct ?? item.assert ?? null); // aceita assert_pct se existir
+
+    tr.innerHTML = `
+      <td>${par}</td>
+      <td class="${side==="LONG"?"verde":(side==="SHORT"?"vermelho":"")}">${side}</td>
+      <td>${fmt3(item.preco)}</td>
+      <td>${fmt3(item.alvo)}</td>
+      <td class="${isFinite(ganho) && ganho>=0 ? "verde":"vermelho"}">${fmtPct2(ganho)}</td>
+      <td>${prazo==null ? "-" : fmt1(prazo)}</td>
+      <td>${assertv==null ? "-" : fmt1(assertv)}</td>
+      <td>${item.data ?? "-"}</td>
+      <td>${item.hora ?? "-"}</td>
+    `;
+
+    // se veio erro do worker, marca a linha
+    if (item.zona === "ERRO" || item.erro || item.erro_api){
+      tr.className = "muted";
+      tr.title = item.erro || item.erro_api || "ERRO";
+    }
+
+    tbody.appendChild(tr);
+  }
+}
+
+async function tick(){
+  try{
+    const r = await fetch("/api/mfe", { cache: "no-store" });
+    const j = await r.json();
+    const rows = j.posicional || [];
+    setStatus(true, "Conectado");
+    msgEl.textContent = j.ultima_atualizacao ? ("Última atualização: " + j.ultima_atualizacao) : "";
+    render(rows);
+  }catch(e){
+    setStatus(false, "Desconectado");
+    tbody.innerHTML = `<tr><td colspan="9" class="err">Erro ao carregar /api/mfe</td></tr>`;
+    msgEl.textContent = String(e);
+  }
+}
+
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ENTRADA MFE - AUTOTRADER (POSICIONAL)</title>
+  <style>
+    body {
+      background: #0c1a2b;
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: #ffffff;
+    }
+    header {
+      text-align: center;
+      padding: 20px;
+      font-size: 22px;
+      font-weight: bold;
+      color: #ff9f1c;
+      border-bottom: 2px solid #ff9f1c;
+    }
+    .container {
+      padding: 20px;
+      max-width: 1200px;
+      margin: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+      font-size: 14px;
+    }
+    th {
+      background: #102842;
+      color: #ff9f1c;
+      padding: 10px;
+      border: 1px solid #1d3b5a;
+      text-align: center;
+    }
+    td {
+      padding: 10px;
+      border: 1px solid #1d3b5a;
+      text-align: center;
+    }
+    .verde { color: #2ecc71; font-weight: bold; }
+    .vermelho { color: #e74c3c; font-weight: bold; }
+    .cinza { color: #c7c7c7; }
+    .rodape-info {
+      margin-top: 12px;
+      font-size: 13px;
+      color: #c7c7c7;
+      text-align: center;
+    }
+    .status-bar {
+      margin-top: 10px;
+      text-align: center;
+      font-size: 13px;
+      color: #c7c7c7;
+    }
+  
+/* ===== CORES (texto) ===== */
+.zona-verde{ color: lime; font-weight: 700; }
+.zona-amarela{ color: yellow; font-weight: 700; }
+.zona-vermelha{ color: red; font-weight: 700; }
+
+.risco-baixo{ color: lime; font-weight: 700; }
+.risco-medio{ color: yellow; font-weight: 700; }
+.risco-alto{ color: red; font-weight: 700; }
+
+.prio-alta{ color: lime; font-weight: 700; }
+.prio-media{ color: yellow; font-weight: 700; }
+.prio-baixa{ color: red; font-weight: 700; }
+
+
+/* CORES ZONA/RISCO/PRIORIDADE */
+.verde{ color:#00ff7f !important; font-weight:800; }
+.amarelo{ color:#ffd966 !important; font-weight:800; }
+.vermelho{ color:#ff4d4d !important; font-weight:800; }
+
+</style>
+</head>
+<body>
+  <header>ENTRADA MFE - AUTOTRADER (POSICIONAL)</header>
+
+  <div class="container">
+
+    <div class="status-bar">
+      <span id="status-api">• Aguardando...</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>PAR</th>
+          <th>SIDE</th>
+          <th>PREÇO</th>
+          <th>ALVO</th>
+          <th>GANHO %</th>
+          <th>ZONA</th>
+          <th>RISCO</th>
+          <th>PRIORIDADE</th>
+          <th>DATA</th>
+          <th>HORA</th>
+        </tr>
+      </thead>
+      <tbody id="tabela-posicional">
+        <tr>
+          <td colspan="10" class="cinza">Carregando dados...</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="rodape-info" id="info-atualizacao">
+      Aguardando primeira atualização...
+    </div>
+  </div>
+
+  <script>
+    function fmt3(v){
+      const n = Number(v);
+      if (!isFinite(n)) return "";
+      return n.toFixed(3);
+    }
+    function fmt2(v){
+      const n = Number(v);
+      if (!isFinite(n)) return "";
+      return n.toFixed(2);
+    }
+
+    async function carregarPainel() {
+      const corpo = document.getElementById("tabela-posicional");
+      const info = document.getElementById("info-atualizacao");
+      const statusApi = document.getElementById("status-api");
+
+      try {
+        const resp = await fetch("/api/entrada?ts=" + Date.now());
+        if (!resp.ok) {
+          throw new Error(resp.status);
+        }
+        const data = await resp.json();
+
+        const lista = data.posicional || [];
+        const ultima = data.ultima_atualizacao || "";
+
+        corpo.innerHTML = "";
+
+        if (lista.length === 0) {
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 10;
+          td.className = "cinza";
+          td.textContent = "Nenhuma moeda com sinal LONG/SHORT neste ciclo. Aguardando próxima atualização...";
+          tr.appendChild(td);
+          corpo.appendChild(tr);
+        } else {
+          lista.forEach(item => {
+            const tr = document.createElement("tr");
+
+            const tdPar = document.createElement("td");
+            tdPar.textContent = item.par || "";
+
+            const tdSide = document.createElement("td");
+            tdSide.textContent = item.side || "";
+            if ((item.side || "").toUpperCase() === "LONG") tdSide.className = "verde";
+            if ((item.side || "").toUpperCase() === "SHORT") tdSide.className = "vermelho";
+
+            const tdPreco = document.createElement("td");
+            tdPreco.textContent = fmt3(item.preco);
+
+            const tdAlvo = document.createElement("td");
+            tdAlvo.textContent = fmt3(item.alvo);
+
+            const tdGanho = document.createElement("td");
+            tdGanho.textContent = fmt2(item.ganho_pct);
+            if (typeof item.ganho_pct === "number") {
+              tdGanho.className = item.ganho_pct >= 0 ? "verde" : "vermelho";
+            }
+
+            const tdZona = document.createElement("td");
+            tdZona.textContent = item.zona || "";
+
+            const tdRisco = document.createElement("td");
+            tdRisco.textContent = item.risco || "";
+
+            const tdPri = document.createElement("td");
+            tdPri.textContent = item.prioridade || "";
+
+            const tdData = document.createElement("td");
+            tdData.textContent = item.data || "";
+
+            const tdHora = document.createElement("td");
+            tdHora.textContent = item.hora || "";
+
+            tr.appendChild(tdPar);
+            tr.appendChild(tdSide);
+            tr.appendChild(tdPreco);
+            tr.appendChild(tdAlvo);
+            tr.appendChild(tdGanho);
+            
+            /* COLOR_PATCH_V4 */
+
+            const z = String((item.zona ?? tdZona.textContent ?? "")).trim().toUpperCase();
+            tdZona.className = "";
+            if (z.includes("VERDE")) tdZona.className = "verde";
+            else if (z.includes("AMARE")) tdZona.className = "amarelo";
+            else if (z.includes("VERMEL")) tdZona.className = "vermelho";
+
+tr.appendChild(tdZona);
+            tr.appendChild(tdRisco);
+            tr.appendChild(tdPri);
+            tr.appendChild(tdData);
+            tr.appendChild(tdHora);
+
+            corpo.appendChild(tr);
+          });
+        }
+
+        if (ultima) {
+          info.textContent = "Atualizado via /api/entrada – Último registro: " + ultima;
+        } else {
+          info.textContent = "Ainda sem atualização válida no JSON.";
+        }
+
+        statusApi.textContent = "• Automação OK (API /api/entrada)";
+      } catch (e) {
+        corpo.innerHTML = "";
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 10;
+        td.className = "cinza";
+        td.textContent = "Erro ao carregar /api/entrada. Verifique o serviço do painel.";
+        tr.appendChild(td);
+        corpo.appendChild(tr);
+
+        info.textContent = "Falha ao atualizar via /api/entrada.";
+        statusApi.textContent = "• Automação OFF (API)";
+      }
+    }
+
+    carregarPainel();
+    setInterval(carregarPainel, 10000);
+  </script>
+
+<!-- MFE_AUTOCOLOR_V5_START -->
+<script>
+(function(){
+  function norm(x){
+    return (x||"").toString().trim().toUpperCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,""); // remove acento
+  }
+  function setColor(td, color){
+    if(!td) return;
+    td.style.setProperty("color", color, "important");
+    td.style.setProperty("font-weight", "800", "important");
+  }
+  function apply(){
+    const table = document.querySelector("table");
+    if(!table) return;
+
+    const ths = Array.from(table.querySelectorAll("thead th"));
+    const idx = {};
+    ths.forEach((th,i)=>idx[norm(th.textContent)] = i);
+
+    const iZona = idx["ZONA"];
+    const iRisco = idx["RISCO"];
+    const iPrio = idx["PRIORIDADE"];
+
+    const rows = Array.from(table.querySelectorAll("tbody tr"));
+    if(!rows.length) return;
+
+    for(const tr of rows){
+      const tds = Array.from(tr.querySelectorAll("td"));
+      const get = (i)=> (i!=null && i>=0 && i<tds.length) ? tds[i] : null;
+
+      // ZONA
+      const tdZ = get(iZona);
+      if(tdZ){
+        const v = norm(tdZ.textContent);
+        if(v.includes("VERDE")) setColor(tdZ, "lime");
+        else if(v.includes("AMARE")) setColor(tdZ, "yellow");
+        else if(v.includes("VERMEL")) setColor(tdZ, "red");
+      }
+
+      // RISCO
+      const tdR = get(iRisco);
+      if(tdR){
+        const v = norm(tdR.textContent);
+        if(v.includes("BAIX")) setColor(tdR, "lime");
+        else if(v.includes("MEDIO")) setColor(tdR, "yellow");
+        else if(v.includes("ALTO")) setColor(tdR, "red");
+      }
+
+      // PRIORIDADE
+      const tdP = get(iPrio);
+      if(tdP){
+        const v = norm(tdP.textContent);
+        if(v.includes("ALTA")) setColor(tdP, "lime");
+        else if(v.includes("MEDIA")) setColor(tdP, "yellow");
+        else if(v.includes("BAIXA")) setColor(tdP, "red");
+      }
+    }
+  }
+
+  setInterval(apply, 600);
+  setTimeout(apply, 200);
+})();
+</script>
+<!-- MFE_AUTOCOLOR_V5_END -->
+
+
+<script>
+/* NO_FLICKER_V1 */
+(() => {
+  let lastNonEmpty = null;
+  let emptyStreak = 0;
+
+  // tenta “interceptar” o dado antes de renderizar
+  const _origApply = window.applyDataToTable || window.renderTable || window.updateTable;
+
+  window.__mfe_stabilize = function(data) {
+    try {
+      const rows = (data && Array.isArray(data.posicional)) ? data.posicional : [];
+      if (rows.length > 0) {
+        lastNonEmpty = data;
+        emptyStreak = 0;
+        return data;
+      }
+      emptyStreak += 1;
+
+      // Se ficou vazio por pouco tempo, mantém o último snapshot (evita sumir)
+      if (lastNonEmpty && emptyStreak <= 3) {
+        // banner discreto
+        const el = document.getElementById("mfeStatusLine");
+        if (el) el.textContent = "Atualizando… mantendo último snapshot para evitar tela vazia.";
+        return lastNonEmpty;
+      }
+      return data;
+    } catch(e) {
+      return data;
+    }
+  };
+
+  // se existir um “pipeline” de render, encaixa nele
+  const _fetchOrig = window.fetchAndRender || window.fetchData || null;
+  if (_fetchOrig) {
+    window.fetchAndRender = async function() {
+      const d = await _fetchOrig();
+      return d;
+    };
+  }
+})();
+</script>
+
+</body>
+</html>

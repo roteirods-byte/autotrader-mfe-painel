@@ -5,79 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ENTRADA MFE - AUTOTRADER (POSICIONAL)</title>
   <style>
-    body {
-      background: #0c1a2b;
-      margin: 0;
-      font-family: Arial, Helvetica, sans-serif;
-      color: #ffffff;
-    }
-    header {
-      text-align: center;
-      padding: 20px;
-      font-size: 22px;
-      font-weight: bold;
-      color: #ff9f1c;
-      border-bottom: 2px solid #ff9f1c;
-    }
-    .container {
-      padding: 20px;
-      max-width: 1200px;
-      margin: auto;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 15px;
-      font-size: 14px;
-    }
-    th {
-      background: #102842;
-      color: #ff9f1c;
-      padding: 10px;
-      border: 1px solid #1d3b5a;
-      text-align: center;
-    }
-    td {
-      padding: 10px;
-      border: 1px solid #1d3b5a;
-      text-align: center;
-    }
-    .verde { color: #2ecc71; font-weight: bold; }
-    .vermelho { color: #e74c3c; font-weight: bold; }
-    .cinza { color: #c7c7c7; }
-    .rodape-info {
-      margin-top: 12px;
-      font-size: 13px;
-      color: #c7c7c7;
-      text-align: center;
-    }
-    .status-bar {
-      margin-top: 10px;
-      text-align: center;
-      font-size: 13px;
-      color: #c7c7c7;
-    }
-  
-/* ===== CORES (texto) ===== */
-.zona-verde{ color: lime; font-weight: 700; }
-.zona-amarela{ color: yellow; font-weight: 700; }
-.zona-vermelha{ color: red; font-weight: 700; }
+    body { background:#0c1a2b; margin:0; font-family:Arial,Helvetica,sans-serif; color:#fff; }
+    header { text-align:center; padding:20px; font-size:22px; font-weight:bold; color:#ff9f1c; border-bottom:2px solid #ff9f1c; }
+    .container { padding:20px; max-width:1200px; margin:auto; }
+    table { width:100%; border-collapse:collapse; margin-top:15px; font-size:14px; }
+    th { background:#102842; color:#ff9f1c; padding:10px; border:1px solid #1d3b5a; text-align:center; }
+    td { padding:10px; border:1px solid #1d3b5a; text-align:center; }
 
-.risco-baixo{ color: lime; font-weight: 700; }
-.risco-medio{ color: yellow; font-weight: 700; }
-.risco-alto{ color: red; font-weight: 700; }
+    .verde { color:#2ecc71; font-weight:bold; }
+    .vermelho { color:#e74c3c; font-weight:bold; }
+    .cinza { color:#c7c7c7; }
 
-.prio-alta{ color: lime; font-weight: 700; }
-.prio-media{ color: yellow; font-weight: 700; }
-.prio-baixa{ color: red; font-weight: 700; }
+    .rodape-info { margin-top:12px; font-size:13px; color:#c7c7c7; text-align:center; }
+    .status-bar { margin-top:10px; text-align:center; font-size:13px; color:#c7c7c7; line-height: 1.6; }
+    .badge { display:inline-block; padding:2px 10px; border-radius:999px; border:1px solid #1d3b5a; margin-left:8px; font-weight:700; }
+    .ok { color:#2ecc71; }
+    .warn { color:#ffd966; }
+    .bad { color:#ff4d4d; }
 
+    /* CORES ZONA/RISCO/PRIORIDADE */
+    .zona-verde,.risco-baixo,.prio-alta { color: lime; font-weight: 800; }
+    .zona-amarela,.risco-medio,.prio-media { color: yellow; font-weight: 800; }
+    .zona-vermelha,.risco-alto,.prio-baixa { color: red; font-weight: 800; }
 
-/* CORES ZONA/RISCO/PRIORIDADE */
-.verde{ color:#00ff7f !important; font-weight:800; }
-.amarelo{ color:#ffd966 !important; font-weight:800; }
-.vermelho{ color:#ff4d4d !important; font-weight:800; }
-
-</style>
+    .amarelo{ color:#ffd966 !important; font-weight:800; }
+  </style>
 </head>
 <body>
   <header>ENTRADA MFE - AUTOTRADER (POSICIONAL)</header>
@@ -85,7 +37,19 @@
   <div class="container">
 
     <div class="status-bar">
-      <span id="status-api">• Aguardando...</span>
+      <div>
+        <span id="status-api">• Aguardando...</span>
+        <span id="badge-sticky" class="badge warn" style="display:none;">STICKY</span>
+      </div>
+      <div>
+        <span id="now-brt">AGORA (BRT): --</span>
+        &nbsp;|&nbsp;
+        <span id="lastcalc-brt">ÚLTIMO CÁLCULO (BRT): --</span>
+        <span id="badge-stale" class="badge warn" style="display:none;">DADOS ANTIGOS</span>
+      </div>
+      <div>
+        <span id="counts">SINAIS: -- | EXIBINDO: --</span>
+      </div>
     </div>
 
     <table>
@@ -104,27 +68,36 @@
         </tr>
       </thead>
       <tbody id="tabela-posicional">
-        <tr>
-          <td colspan="10" class="cinza">Carregando dados...</td>
-        </tr>
+        <tr><td colspan="10" class="cinza">Carregando dados...</td></tr>
       </tbody>
     </table>
 
-    <div class="rodape-info" id="info-atualizacao">
-      Aguardando primeira atualização...
-    </div>
+    <div class="rodape-info" id="info-atualizacao">Aguardando primeira atualização...</div>
   </div>
 
   <script>
+    function isBlank(v){
+      return v === "" || v === null || v === undefined;
+    }
     function fmt3(v){
+      if (isBlank(v)) return "";
       const n = Number(v);
       if (!isFinite(n)) return "";
       return n.toFixed(3);
     }
     function fmt2(v){
+      if (isBlank(v)) return "";
       const n = Number(v);
       if (!isFinite(n)) return "";
       return n.toFixed(2);
+    }
+    function norm(x){
+      return (x||"").toString().trim().toUpperCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+    }
+
+    function setBadge(el, show){
+      el.style.display = show ? "inline-block" : "none";
     }
 
     async function carregarPainel() {
@@ -132,96 +105,115 @@
       const info = document.getElementById("info-atualizacao");
       const statusApi = document.getElementById("status-api");
 
+      const nowEl = document.getElementById("now-brt");
+      const lastEl = document.getElementById("lastcalc-brt");
+      const countsEl = document.getElementById("counts");
+
+      const badgeStale = document.getElementById("badge-stale");
+      const badgeSticky = document.getElementById("badge-sticky");
+
       try {
         const resp = await fetch("/api/entrada?ts=" + Date.now());
-        if (!resp.ok) {
-          throw new Error(resp.status);
-        }
+        if (!resp.ok) throw new Error(resp.status);
+
         const data = await resp.json();
 
-        const lista = data.posicional || [];
-        const ultima = data.ultima_atualizacao || "";
+        // topo: AGORA e ÚLTIMO CÁLCULO (vem do server.js)
+        const serverNow = data.server_now || "--";
+        const lastCalc = data.ultima_atualizacao || "--";
+        nowEl.textContent = "AGORA (BRT): " + serverNow;
+        lastEl.textContent = "ÚLTIMO CÁLCULO (BRT): " + lastCalc;
 
+        // stale (fallback)
+        setBadge(badgeStale, !!data.stale);
+
+        // sticky do navegador (se você quiser manter depois; por enquanto não força)
+        setBadge(badgeSticky, false);
+
+        // lista (sempre vem preenchida até o universo)
+        const lista = Array.isArray(data.posicional) ? data.posicional : [];
         corpo.innerHTML = "";
 
-        if (lista.length === 0) {
+        for (const item of lista) {
           const tr = document.createElement("tr");
-          const td = document.createElement("td");
-          td.colSpan = 10;
-          td.className = "cinza";
-          td.textContent = "Nenhuma moeda com sinal LONG/SHORT neste ciclo. Aguardando próxima atualização...";
-          tr.appendChild(td);
+
+          const tdPar = document.createElement("td");
+          tdPar.textContent = item.par || "";
+
+          const tdSide = document.createElement("td");
+          tdSide.textContent = item.side || "";
+          const s = norm(item.side);
+          if (s === "LONG") tdSide.className = "verde";
+          else if (s === "SHORT") tdSide.className = "vermelho";
+
+          const tdPreco = document.createElement("td");
+          tdPreco.textContent = fmt3(item.preco);
+
+          const tdAlvo = document.createElement("td");
+          tdAlvo.textContent = fmt3(item.alvo);
+
+          const tdGanho = document.createElement("td");
+          tdGanho.textContent = fmt2(item.ganho_pct);
+          const g = Number(item.ganho_pct);
+          if (isFinite(g)) tdGanho.className = g >= 0 ? "verde" : "vermelho";
+
+          const tdZona = document.createElement("td");
+          tdZona.textContent = item.zona || "";
+
+          const tdRisco = document.createElement("td");
+          tdRisco.textContent = item.risco || "";
+
+          const tdPri = document.createElement("td");
+          tdPri.textContent = item.prioridade || "";
+
+          const tdData = document.createElement("td");
+          tdData.textContent = item.data || "";
+
+          const tdHora = document.createElement("td");
+          tdHora.textContent = item.hora || "";
+
+          // cores ZONA
+          const z = norm(tdZona.textContent);
+          if (z.includes("VERDE")) tdZona.className = "zona-verde";
+          else if (z.includes("AMARE")) tdZona.className = "zona-amarela";
+          else if (z.includes("VERMEL")) tdZona.className = "zona-vermelha";
+
+          // cores RISCO
+          const r = norm(tdRisco.textContent);
+          if (r.includes("BAIX")) tdRisco.className = "risco-baixo";
+          else if (r.includes("MEDIO")) tdRisco.className = "risco-medio";
+          else if (r.includes("ALTO")) tdRisco.className = "risco-alto";
+
+          // cores PRIORIDADE
+          const p = norm(tdPri.textContent);
+          if (p.includes("ALTA")) tdPri.className = "prio-alta";
+          else if (p.includes("MEDIA")) tdPri.className = "prio-media";
+          else if (p.includes("BAIXA")) tdPri.className = "prio-baixa";
+
+          tr.appendChild(tdPar);
+          tr.appendChild(tdSide);
+          tr.appendChild(tdPreco);
+          tr.appendChild(tdAlvo);
+          tr.appendChild(tdGanho);
+          tr.appendChild(tdZona);
+          tr.appendChild(tdRisco);
+          tr.appendChild(tdPri);
+          tr.appendChild(tdData);
+          tr.appendChild(tdHora);
+
           corpo.appendChild(tr);
-        } else {
-          lista.forEach(item => {
-            const tr = document.createElement("tr");
-
-            const tdPar = document.createElement("td");
-            tdPar.textContent = item.par || "";
-
-            const tdSide = document.createElement("td");
-            tdSide.textContent = item.side || "";
-            if ((item.side || "").toUpperCase() === "LONG") tdSide.className = "verde";
-            if ((item.side || "").toUpperCase() === "SHORT") tdSide.className = "vermelho";
-
-            const tdPreco = document.createElement("td");
-            tdPreco.textContent = fmt3(item.preco);
-
-            const tdAlvo = document.createElement("td");
-            tdAlvo.textContent = fmt3(item.alvo);
-
-            const tdGanho = document.createElement("td");
-            tdGanho.textContent = fmt2(item.ganho_pct);
-            if (typeof item.ganho_pct === "number") {
-              tdGanho.className = item.ganho_pct >= 0 ? "verde" : "vermelho";
-            }
-
-            const tdZona = document.createElement("td");
-            tdZona.textContent = item.zona || "";
-
-            const tdRisco = document.createElement("td");
-            tdRisco.textContent = item.risco || "";
-
-            const tdPri = document.createElement("td");
-            tdPri.textContent = item.prioridade || "";
-
-            const tdData = document.createElement("td");
-            tdData.textContent = item.data || "";
-
-            const tdHora = document.createElement("td");
-            tdHora.textContent = item.hora || "";
-
-            tr.appendChild(tdPar);
-            tr.appendChild(tdSide);
-            tr.appendChild(tdPreco);
-            tr.appendChild(tdAlvo);
-            tr.appendChild(tdGanho);
-            
-            /* COLOR_PATCH_V4 */
-
-            const z = String((item.zona ?? tdZona.textContent ?? "")).trim().toUpperCase();
-            tdZona.className = "";
-            if (z.includes("VERDE")) tdZona.className = "verde";
-            else if (z.includes("AMARE")) tdZona.className = "amarelo";
-            else if (z.includes("VERMEL")) tdZona.className = "vermelho";
-
-tr.appendChild(tdZona);
-            tr.appendChild(tdRisco);
-            tr.appendChild(tdPri);
-            tr.appendChild(tdData);
-            tr.appendChild(tdHora);
-
-            corpo.appendChild(tr);
-          });
         }
 
-        if (ultima) {
-          info.textContent = "Atualizado via /api/entrada – Último registro: " + ultima;
-        } else {
-          info.textContent = "Ainda sem atualização válida no JSON.";
-        }
+        // rodapé
+        info.textContent = "Fonte: /api/entrada | Último cálculo: " + (data.ultima_atualizacao || "--");
+
+        // contadores
+        const totalEx = data.total_exibidas ?? lista.length;
+        const totalSinais = data.total_sinais ?? "--";
+        countsEl.textContent = "SINAIS: " + totalSinais + " | EXIBINDO: " + totalEx;
 
         statusApi.textContent = "• Automação OK (API /api/entrada)";
+        statusApi.className = "ok";
       } catch (e) {
         corpo.innerHTML = "";
         const tr = document.createElement("tr");
@@ -232,80 +224,14 @@ tr.appendChild(tdZona);
         tr.appendChild(td);
         corpo.appendChild(tr);
 
-        info.textContent = "Falha ao atualizar via /api/entrada.";
+        document.getElementById("info-atualizacao").textContent = "Falha ao atualizar via /api/entrada.";
         statusApi.textContent = "• Automação OFF (API)";
+        statusApi.className = "bad";
       }
     }
 
     carregarPainel();
-    setInterval(carregarPainel, 10000);
+    setInterval(carregarPainel, 10000); // painel consulta a cada 10s, mas o cálculo é do worker (5 min)
   </script>
-
-<!-- MFE_AUTOCOLOR_V5_START -->
-<script>
-(function(){
-  function norm(x){
-    return (x||"").toString().trim().toUpperCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g,""); // remove acento
-  }
-  function setColor(td, color){
-    if(!td) return;
-    td.style.setProperty("color", color, "important");
-    td.style.setProperty("font-weight", "800", "important");
-  }
-  function apply(){
-    const table = document.querySelector("table");
-    if(!table) return;
-
-    const ths = Array.from(table.querySelectorAll("thead th"));
-    const idx = {};
-    ths.forEach((th,i)=>idx[norm(th.textContent)] = i);
-
-    const iZona = idx["ZONA"];
-    const iRisco = idx["RISCO"];
-    const iPrio = idx["PRIORIDADE"];
-
-    const rows = Array.from(table.querySelectorAll("tbody tr"));
-    if(!rows.length) return;
-
-    for(const tr of rows){
-      const tds = Array.from(tr.querySelectorAll("td"));
-      const get = (i)=> (i!=null && i>=0 && i<tds.length) ? tds[i] : null;
-
-      // ZONA
-      const tdZ = get(iZona);
-      if(tdZ){
-        const v = norm(tdZ.textContent);
-        if(v.includes("VERDE")) setColor(tdZ, "lime");
-        else if(v.includes("AMARE")) setColor(tdZ, "yellow");
-        else if(v.includes("VERMEL")) setColor(tdZ, "red");
-      }
-
-      // RISCO
-      const tdR = get(iRisco);
-      if(tdR){
-        const v = norm(tdR.textContent);
-        if(v.includes("BAIX")) setColor(tdR, "lime");
-        else if(v.includes("MEDIO")) setColor(tdR, "yellow");
-        else if(v.includes("ALTO")) setColor(tdR, "red");
-      }
-
-      // PRIORIDADE
-      const tdP = get(iPrio);
-      if(tdP){
-        const v = norm(tdP.textContent);
-        if(v.includes("ALTA")) setColor(tdP, "lime");
-        else if(v.includes("MEDIA")) setColor(tdP, "yellow");
-        else if(v.includes("BAIXA")) setColor(tdP, "red");
-      }
-    }
-  }
-
-  setInterval(apply, 600);
-  setTimeout(apply, 200);
-})();
-</script>
-<!-- MFE_AUTOCOLOR_V5_END -->
-
 </body>
 </html>

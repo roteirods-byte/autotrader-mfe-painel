@@ -1,0 +1,74 @@
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const express = require("express");
+
+const app = express();
+const PORT = process.env.PORT || 8082;
+
+const ROOT = __dirname;
+const INDEX_HTML = path.join(ROOT, "index.html");
+const ENTRADA_PATH = process.env.ENTRADA_JSON || path.join(ROOT, "entrada.json");
+
+let LAST_OK = { posicional: [], ultima_atualizacao: null, stale: true };
+
+function noStore(res) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+}
+
+function safeReadJson(filePath) {
+  const raw = fs.readFileSync(filePath, "utf8");
+  const txt = (raw || "").trim();
+  if (!txt) throw new Error("arquivo_vazio");
+  return JSON.parse(txt);
+}
+
+function jsonAgeSec(filePath) {
+  try {
+    const st = fs.statSync(filePath);
+    return Math.max(0, Math.floor((Date.now() - st.mtimeMs) / 1000));
+  } catch {
+    return null;
+  }
+}
+
+app.get("/health", (req, res) => {
+  noStore(res);
+  try {
+    const data = safeReadJson(ENTRADA_PATH);
+    res.json({ ok: true, ok_json: true, json_age_sec: jsonAgeSec(ENTRADA_PATH), ultima_atualizacao: data.ultima_atualizacao || null });
+  } catch (e) {
+    res.json({ ok: true, ok_json: false, json_age_sec: jsonAgeSec(ENTRADA_PATH), erro: String(e.message || e) });
+  }
+});
+
+app.get("/api/entrada", (req, res) => {
+  noStore(res);
+
+  try {
+    const data = safeReadJson(ENTRADA_PATH);
+
+    // garante formato
+    if (!data || typeof data !== "object") throw new Error("json_invalido_obj");
+    if (!Array.isArray(data.posicional)) data.posicional = [];
+
+    LAST_OK = { ...data, stale: false };
+    return res.json(LAST_OK);
+  } catch (e) {
+    // blindagem: nunca quebra o painel
+    return res.json({ ...LAST_OK, stale: true, erro: "fallback_last_ok" });
+  }
+});
+
+app.get("/", (req, res) => {
+  noStore(res);
+  return res.sendFile(INDEX_HTML);
+});
+
+app.listen(PORT, () => {
+  console.log(`[MFE] Painel ouvindo na porta ${PORT}`);
+  console.log(`[MFE] Lendo JSON em: ${ENTRADA_PATH}`);
+});

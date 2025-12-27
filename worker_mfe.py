@@ -1,276 +1,204 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, json, csv, time, requests, tempfile
+import os, json, csv, time, math, tempfile
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-TZ_NAME = os.getenv("APP_TZ", "America/Sao_Paulo")
-TZ = ZoneInfo(TZ_NAME)
+TZ = ZoneInfo("America/Sao_Paulo")
 
-ROOT = os.path.dirname(__file__)
-OUTPUT_JSON = os.getenv("OUTPUT_JSON", os.path.join(ROOT, "entrada.json"))
-MFE_CSV = os.getenv("MFE_CSV", "/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv")
-INTERVALO = int(os.getenv("INTERVALO", "300"))
-RUN_ONCE = os.getenv("RUN_ONCE", "0") == "1"
+CSV_PATH = os.environ.get("MFE_CSV", "/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv")
+PRICES_PATH = os.environ.get("MFE_PRICES_JSON", "/home/roteiro_ds/ENTRADA-MFE/precos_cache.json")
+OUT_JSON = os.environ.get("ENTRADA_JSON", "/home/roteiro_ds/ENTRADA-MFE/entrada.json")
 
-GAIN_MIN = float(os.getenv("GAIN_MIN", "3.0"))  # filtro único
-PRICE_CACHE_FILE = os.getenv("PRICE_CACHE_FILE", os.path.join(ROOT, "precos_cache.json"))
+ASSERT_MIN = float(os.environ.get("ASSERT_MIN", "65"))   # usa PERCENTIL como “assertividade”
+GAIN_MIN   = float(os.environ.get("GAIN_MIN", "3"))      # ALVO_PCT mínimo
 
-PARES = [
-    "AAVE","ADA","APE","APT","AR","ARB","ATOM","AVAX","AXS","BAT","BCH","BLUR","BNB","BONK","BTC",
-    "COMP","CRV","DASH","DGB","DENT","DOGE","DOT","EGLD","EOS","ETC","ETH","FET","FIL","FLOKI","FLOW",
-    "FTM","GALA","GLM","GRT","HBAR","IMX","INJ","IOST","ICP","KAS","KAVA","KSM","LINK","LTC","MANA",
-    "MATIC","MKR","NEO","NEAR","OMG","ONT","OP","ORDI","PEPE","QNT","QTUM","RNDR","ROSE","RUNE","SAND",
-    "SEI","SHIB","SNX","SOL","STX","SUSHI","TIA","THETA","TRX","UNI","VET","XRP","XEM","XLM","XVS",
-    "ZEC","ZRX"
-]
+# ---- util ----
+def now_brt():
+    return datetime.now(TZ)
 
-PRECO_CACHE = {}
-
-def load_preco_cache():
-    global PRECO_CACHE
-    try:
-        if os.path.exists(PRICE_CACHE_FILE):
-            with open(PRICE_CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                PRECO_CACHE = {k: float(v) for k, v in data.items() if v}
-    except:
-        pass
-
-def save_preco_cache():
-    try:
-        tmp = PRICE_CACHE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(PRECO_CACHE, f, ensure_ascii=False)
-        os.replace(tmp, PRICE_CACHE_FILE)
-    except:
-        pass
-
-def atualizar_precos_bulk(pares):
-    """
-    Robusto:
-    - tenta 3x
-    - se falhar, mantém cache anterior (não zera)
-    - se sucesso, salva cache em disco
-    """
-    global PRECO_CACHE
-    cache_final = {}
-    CHUNK = 25
-
-    for tentativa in range(1, 4):
-        try:
-            cache_final = {}
-            for i in range(0, len(pares), CHUNK):
-                parte = pares[i:i+CHUNK]
-                url = "https://min-api.cryptocompare.com/data/pricemulti"
-                qs = {"fsyms": ",".join(parte), "tsyms": "USD"}
-                resp = requests.get(url, params=qs, timeout=8).json()
-                for sym in parte:
-                    v = resp.get(sym, {}).get("USD", 0)
-                    try:
-                        cache_final[sym] = float(v) if v else 0.0
-                    except:
-                        cache_final[sym] = 0.0
-
-            nonzero = sum(1 for v in cache_final.values() if v and v > 0)
-            if nonzero < 10:
-                raise RuntimeError(f"precos_insuficientes nonzero={nonzero}")
-
-            PRECO_CACHE = cache_final
-            save_preco_cache()
-            return True
-        except Exception as e:
-            if tentativa == 3:
-                return False
-            time.sleep(0.6)
-
-def preco_atual(par):
-    try:
-        return float(PRECO_CACHE.get(par, 0.0) or 0.0)
-    except:
-        return 0.0
-
-def risco_por_ativo(par):
-    baixo = {"BTC","ETH","BNB","XRP","ADA","SOL","DOGE","TRX","LTC","LINK","DOT","AVAX","ATOM","BCH"}
-    alto  = {"PEPE","BONK","FLOKI","SHIB","DENT","DGB","IOST","ORDI"}
-    if par in baixo: return "BAIXO"
-    if par in alto:  return "ALTO"
-    return "MÉDIO"
-
-def peso_risco(risco):
-    if risco == "BAIXO": return 1.00
-    if risco == "MÉDIO": return 0.92
-    return 0.82
-
-def ler_estudos_csv(caminho):
-    estudos = {}
-    with open(caminho, "r", encoding="utf-8") as f:
-        rd = csv.DictReader(f, delimiter=";")
-        for r in rd:
-            par = (r.get("PAR") or "").strip().upper()
-            lado = (r.get("LADO") or "").strip().upper()
-            perc = (r.get("PERCENTIL") or "").strip()
-            alvo = (r.get("ALVO_PCT") or "").strip()
-            if not par or lado not in ("LONG","SHORT") or perc not in ("50","60","70"):
-                continue
-            try:
-                alvo_f = float(alvo)
-            except:
-                continue
-            estudos.setdefault(par, {}).setdefault(lado, {})[f"P{perc}"] = alvo_f
-    return estudos
-
-def alvo_preco(preco, alvo_pct, side):
-    if preco <= 0 or alvo_pct <= 0:
-        return 0.0
-    if side == "LONG":
-        return preco * (1 + alvo_pct/100.0)
-    return preco * (1 - alvo_pct/100.0)
-
-def prob_atingir_pct(mfe_side, pct):
-    p50 = float(mfe_side.get("P50", 0) or 0)
-    p60 = float(mfe_side.get("P60", 0) or 0)
-    p70 = float(mfe_side.get("P70", 0) or 0)
-
-    if pct <= 0: return 100.0
-    if p50 <= 0: return 0.0
-    if p60 <= p50: p60 = p50
-    if p70 <= p60: p70 = p60
-
-    if pct <= p50:
-        cdf = 0.5 * (pct / p50)
-    elif pct <= p60:
-        cdf = 0.5 + 0.1 * ((pct - p50) / (p60 - p50 + 1e-9))
-    elif pct <= p70:
-        cdf = 0.6 + 0.1 * ((pct - p60) / (p70 - p60 + 1e-9))
-    else:
-        cdf = min(0.95, 0.7 + 0.25 * ((pct - p70) / (p70 + 1e-9)))
-
-    prob = max(0.0, 1.0 - cdf)
-    return round(prob * 100.0, 2)
-
-def zona_por_ganho(ganho):
-    if ganho >= 6: return "VERDE"
-    if ganho >= 3: return "AMARELA"
-    return "VERMELHA"
-
-def prioridade_por_ganho(ganho):
-    if ganho >= 8: return "ALTA"
-    if ganho >= 5: return "MÉDIA"
-    return "BAIXA"
-
-def calcular_sinal(par, mfe):
-    preco = preco_atual(par)
-    if preco <= 0:
-        return None
-
-    L = mfe.get("LONG") or {}
-    S = mfe.get("SHORT") or {}
-    if not L and not S:
-        return None
-
-    # P60 ESTRITO
-    p60L = float(L.get("P60", 0) or 0)
-    p60S = float(S.get("P60", 0) or 0)
-
-    okL = p60L >= GAIN_MIN and p60L > 0
-    okS = p60S >= GAIN_MIN and p60S > 0
-    if not okL and not okS:
-        return None
-
-    risco = risco_por_ativo(par)
-    w = peso_risco(risco)
-
-    aL = prob_atingir_pct(L, GAIN_MIN) if okL else 0.0
-    aS = prob_atingir_pct(S, GAIN_MIN) if okS else 0.0
-
-    scoreL = (p60L * (aL/100.0) * w) if okL else 0.0
-    scoreS = (p60S * (aS/100.0) * w) if okS else 0.0
-
-    if okL and (not okS or scoreL >= scoreS):
-        side, alvo_pct, ganho, assertiv, score = "LONG", p60L, p60L, aL, scoreL
-    else:
-        side, alvo_pct, ganho, assertiv, score = "SHORT", p60S, p60S, aS, scoreS
-
-    alvo = alvo_preco(preco, alvo_pct, side)
-    agora = datetime.now(TZ)
-
-    return {
-        "par": par,
-        "side": side,
-        "preco": float(preco),
-        "alvo": float(alvo),
-        "ganho_pct": round(float(ganho), 2),
-        "assertividade": float(assertiv),
-        "score": round(float(score), 4),
-        "zona": zona_por_ganho(ganho),
-        "risco": risco,
-        "prioridade": prioridade_por_ganho(ganho),
-        "data": agora.strftime("%Y-%m-%d"),
-        "hora": agora.strftime("%H:%M")
-    }
-
-def write_json_atomic(path, obj):
+def atomic_write_json(path: str, obj: dict):
     d = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(prefix=".tmp_entrada_", dir=d)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=d)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(obj, f, indent=2, ensure_ascii=False)
+            json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     finally:
         try:
             if os.path.exists(tmp):
                 os.remove(tmp)
-        except:
+        except Exception:
             pass
 
-def loop():
-    load_preco_cache()
-    print(f"[MFE] TZ={TZ_NAME} | OUTPUT_JSON={OUTPUT_JSON} | MFE_CSV={MFE_CSV} | GAIN_MIN={GAIN_MIN}")
-    while True:
-        try:
-            estudos = ler_estudos_csv(MFE_CSV)
+def load_prices_any(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
 
-            ok_price = atualizar_precos_bulk(PARES)
-            nonzero = sum(1 for v in PRECO_CACHE.values() if v and v > 0)
+    prices = {}
+    # aceita formatos comuns
+    if isinstance(data, dict):
+        # { "AAVE": 123.4 } ou { "prices": { "AAVE": 123.4 } }
+        if all(isinstance(v, (int, float)) for v in data.values()):
+            for k,v in data.items():
+                prices[str(k).upper()] = float(v)
+            return prices
+        if "prices" in data and isinstance(data["prices"], dict):
+            for k,v in data["prices"].items():
+                if isinstance(v, (int,float)):
+                    prices[str(k).upper()] = float(v)
+            return prices
+        # varre níveis (1 nível) procurando números
+        for k,v in data.items():
+            if isinstance(v, dict):
+                for kk,vv in v.items():
+                    if isinstance(vv,(int,float)):
+                        prices[str(kk).upper()] = float(vv)
+    return prices
 
-            if not ok_price and nonzero < 10:
-                # Sem preços -> não sobrescreve o JSON bom
-                print(f"[WARN] Falha preços (cache insuficiente). Mantendo último entrada.json. nonzero={nonzero}")
+def zone_from_percentil(p: float) -> str:
+    if p >= 70: return "VERDE"
+    if p >= 50: return "AMARELA"
+    return "VERMELHA"
+
+def risco_from_percentil(p: float) -> str:
+    if p >= 70: return "BAIXO"
+    if p >= 50: return "MÉDIO"
+    return "ALTO"
+
+def prioridade_from_gain(g: float, zona: str) -> str:
+    # regra conservadora e estável (pode ajustar depois)
+    if zona == "VERDE" and g >= 10: return "ALTA"
+    if g >= 5: return "MÉDIA"
+    return "BAIXA"
+
+def to_float(x):
+    try:
+        if x is None: return None
+        s = str(x).strip().replace(",", ".")
+        if s == "": return None
+        return float(s)
+    except Exception:
+        return None
+
+# ---- load estudos ----
+def load_estudos(csv_path: str):
+    rows = []
+    with open(csv_path, "r", encoding="utf-8") as f:
+        r = csv.DictReader(f, delimiter=";")
+        # precisa dessas colunas
+        need = {"PAR","LADO","PERCENTIL","ALVO_PCT"}
+        if not need.issubset(set([c.strip().upper() for c in r.fieldnames or []])):
+            raise RuntimeError("CSV inválido: esperado colunas PAR;LADO;PERCENTIL;ALVO_PCT")
+        for row in r:
+            par = (row.get("PAR") or "").strip().upper()
+            lado = (row.get("LADO") or "").strip().upper()
+            p = to_float(row.get("PERCENTIL"))
+            alvo_pct = to_float(row.get("ALVO_PCT"))
+            if not par:
+                continue
+            rows.append({
+                "PAR": par,
+                "LADO": "LONG" if "LONG" in lado else ("SHORT" if "SHORT" in lado else lado),
+                "PERCENTIL": 0.0 if p is None else p,
+                "ALVO_PCT": 0.0 if alvo_pct is None else alvo_pct,
+            })
+    return rows
+
+def choose_best_per_par(rows):
+    # Se CSV tiver várias linhas do mesmo PAR, escolhe 1 (melhor “score”)
+    best = {}
+    for r in rows:
+        par = r["PAR"]
+        score = (r["ALVO_PCT"] * (r["PERCENTIL"]/100.0))
+        if (par not in best) or (score > best[par]["_SCORE"]):
+            rr = dict(r)
+            rr["_SCORE"] = score
+            best[par] = rr
+    return [best[k] for k in sorted(best.keys())]
+
+def build_output():
+    prices = load_prices_any(PRICES_PATH)
+    estudos = load_estudos(CSV_PATH)
+    escolhidos = choose_best_per_par(estudos)
+
+    t = now_brt()
+    data_str = t.strftime("%Y-%m-%d")
+    hora_str = t.strftime("%H:%M")
+
+    out_rows = []
+    total_sinais = 0
+
+    for e in escolhidos:
+        par = e["PAR"]
+        lado = e["LADO"]
+        percentil = float(e["PERCENTIL"])
+        alvo_pct = float(e["ALVO_PCT"])
+
+        preco = float(prices.get(par, 0.0) or 0.0)
+
+        # Filtro oficial (se não bate mínimo, vira “NÃO ENTRAR”)
+        if percentil < ASSERT_MIN or alvo_pct < GAIN_MIN or preco <= 0:
+            side = "NÃO ENTRAR"
+            alvo = ""
+            ganho_pct = ""
+        else:
+            side = lado if lado in ("LONG","SHORT") else "NÃO ENTRAR"
+            if side == "LONG":
+                alvo = round(preco * (1.0 + alvo_pct/100.0), 3)
+            elif side == "SHORT":
+                alvo = round(preco * (1.0 - alvo_pct/100.0), 3)
             else:
-                sinais = []
-                for par in PARES:
-                    mfe = estudos.get(par)
-                    if not mfe:
-                        continue
-                    s = calcular_sinal(par, mfe)
-                    if s:
-                        sinais.append(s)
+                alvo = ""
+            ganho_pct = round(alvo_pct, 2)
+            if side != "NÃO ENTRAR":
+                total_sinais += 1
 
-                # rank por score
-                rank_map = {}
-                for i, it in enumerate(sorted(sinais, key=lambda x: x["score"], reverse=True), start=1):
-                    rank_map[it["par"]] = i
-                for it in sinais:
-                    it["rank"] = rank_map.get(it["par"], 999)
+        zona = zone_from_percentil(percentil)
+        risco = risco_from_percentil(percentil)
+        prioridade = prioridade_from_gain(float(alvo_pct), zona)
 
-                sinais.sort(key=lambda x: x["par"])
+        out_rows.append({
+            "par": par,
+            "side": side,
+            "preco": round(preco, 3) if preco else 0.0,
+            "alvo": alvo if alvo != "" else "",
+            "ganho_pct": ganho_pct if ganho_pct != "" else "",
+            "zona": zona,
+            "risco": risco,
+            "prioridade": prioridade,
+            "data": data_str,
+            "hora": hora_str,
+        })
 
-                saida = {
-                    "posicional": sinais,
-                    "ultima_atualizacao": datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
-                }
-                write_json_atomic(OUTPUT_JSON, saida)
-                print(f"[OK] Atualizado: {saida['ultima_atualizacao']} | Total exibidas: {len(sinais)}")
+    payload = {
+        "posicional": out_rows,
+        "ultima_atualizacao": f"{data_str} {hora_str}",
+        "server_now": f"{data_str} {hora_str}",
+        "assert_min": ASSERT_MIN,
+        "gain_min": GAIN_MIN,
+        "total_sinais": total_sinais,
+    }
+    return payload
 
-        except Exception as e:
-            print("ERRO NO LOOP:", e)
+def main():
+    payload = build_output()
 
-        if RUN_ONCE:
-            break
-        time.sleep(INTERVALO)
+    # Regra crítica: se der qualquer problema grave, NÃO apagar o último JSON
+    # Aqui só escreve se payload tem lista não vazia.
+    if not isinstance(payload.get("posicional"), list) or len(payload["posicional"]) == 0:
+        raise RuntimeError("Sem linhas para escrever (posicional vazio).")
+
+    atomic_write_json(OUT_JSON, payload)
+
+    print(f"[OK] Atualizado: {payload.get('ultima_atualizacao')} | Total exibidas: {len(payload['posicional'])} | Total sinais: {payload.get('total_sinais')}")
 
 if __name__ == "__main__":
-    loop()
+    main()

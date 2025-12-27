@@ -1,0 +1,15 @@
+[Unit]
+Description=AUTOTRADER MFE - Worker (gera entrada.json)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=roteiro_ds
+WorkingDirectory=/home/roteiro_ds/ENTRADA-MFE
+Environment=TZ=America/Sao_Paulo
+Environment=OUTPUT_JSON=/home/roteiro_ds/ENTRADA-MFE/entrada.json
+Environment=MFE_COINS_FILE=/home/roteiro_ds/ENTRADA-MFE/coins_77.txt
+
+ExecStart=/usr/bin/python3 /home/roteiro_ds/ENTRADA-MFE/worker_mfe.py
+ExecStartPost=/usr/bin/python3 /home/roteiro_ds/ENTRADA-MFE/mfe_enrich.py

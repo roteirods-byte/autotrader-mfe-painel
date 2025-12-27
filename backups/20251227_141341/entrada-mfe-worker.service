@@ -1,0 +1,17 @@
+[Unit]
+Description=ENTRADA-MFE - Worker (gera entrada.json a cada 5 min)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=roteiro_ds
+WorkingDirectory=/home/roteiro_ds/ENTRADA-MFE
+ExecStart=/usr/bin/python3 -u /home/roteiro_ds/ENTRADA-MFE/worker_mfe.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

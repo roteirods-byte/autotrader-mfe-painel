@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ENTRADA MFE - AUTOTRADER (POSICIONAL)</title>
+  <style>
+    body {
+      background: #0c1a2b;
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: #ffffff;
+    }
+    header {
+      text-align: center;
+      padding: 20px;
+      font-size: 22px;
+      font-weight: bold;
+      color: #ff9f1c;
+      border-bottom: 2px solid #ff9f1c;
+    }
+    .container {
+      padding: 20px;
+      max-width: 1200px;
+      margin: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+      font-size: 14px;
+    }
+    th {
+      background: #102842;
+      color: #ff9f1c;
+      padding: 10px;
+      border: 1px solid #1d3b5a;
+      text-align: center;
+    }
+    td {
+      padding: 10px;
+      border: 1px solid #1d3b5a;
+      text-align: center;
+    }
+    .verde { color: #2ecc71; font-weight: bold; }
+    .vermelho { color: #e74c3c; font-weight: bold; }
+    .cinza { color: #c7c7c7; }
+    .rodape-info {
+      margin-top: 12px;
+      font-size: 13px;
+      color: #c7c7c7;
+      text-align: center;
+    }
+    .status-bar {
+      margin-top: 10px;
+      text-align: center;
+      font-size: 13px;
+      color: #c7c7c7;
+    }
+  
+/* ===== CORES (texto) ===== */
+.zona-verde{ color: lime; font-weight: 700; }
+.zona-amarela{ color: yellow; font-weight: 700; }
+.zona-vermelha{ color: red; font-weight: 700; }
+
+.risco-baixo{ color: lime; font-weight: 700; }
+.risco-medio{ color: yellow; font-weight: 700; }
+.risco-alto{ color: red; font-weight: 700; }
+
+.prio-alta{ color: lime; font-weight: 700; }
+.prio-media{ color: yellow; font-weight: 700; }
+.prio-baixa{ color: red; font-weight: 700; }
+
+</style>
+</head>
+<body>
+  <header>ENTRADA MFE - AUTOTRADER (POSICIONAL)</header>
+
+  <div class="container">
+
+    <div class="status-bar">
+      <span id="status-api">• Aguardando...</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>PAR</th>
+          <th>SIDE</th>
+          <th>PREÇO</th>
+          <th>ALVO</th>
+          <th>GANHO %</th>
+          <th>ZONA</th>
+          <th>RISCO</th>
+          <th>PRIORIDADE</th>
+          <th>DATA</th>
+          <th>HORA</th>
+        </tr>
+      </thead>
+      <tbody id="tabela-posicional">
+        <tr>
+          <td colspan="10" class="cinza">Carregando dados...</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="rodape-info" id="info-atualizacao">
+      Aguardando primeira atualização...
+    </div>
+  </div>
+
+  <script>
+    function fmt3(v){
+      const n = Number(v);
+      if (!isFinite(n)) return "";
+      return n.toFixed(3);
+    }
+    function fmt2(v){
+      const n = Number(v);
+      if (!isFinite(n)) return "";
+      return n.toFixed(2);
+    }
+
+    async function carregarPainel() {
+      const corpo = document.getElementById("tabela-posicional");
+      const info = document.getElementById("info-atualizacao");
+      const statusApi = document.getElementById("status-api");
+
+      try {
+        const resp = await fetch("/api/entrada?ts=" + Date.now());
+        if (!resp.ok) {
+          throw new Error(resp.status);
+        }
+        const data = await resp.json();
+
+        const lista = data.posicional || [];
+        const ultima = data.ultima_atualizacao || "";
+
+        corpo.innerHTML = "";
+
+        if (lista.length === 0) {
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 10;
+          td.className = "cinza";
+          td.textContent = "Nenhuma moeda com sinal LONG/SHORT neste ciclo. Aguardando próxima atualização...";
+          tr.appendChild(td);
+          corpo.appendChild(tr);
+        } else {
+          lista.forEach(item => {
+            const tr = document.createElement("tr");
+
+            const tdPar = document.createElement("td");
+            tdPar.textContent = item.par || "";
+
+            const tdSide = document.createElement("td");
+            tdSide.textContent = item.side || "";
+            if ((item.side || "").toUpperCase() === "LONG") tdSide.className = "verde";
+            if ((item.side || "").toUpperCase() === "SHORT") tdSide.className = "vermelho";
+
+            const tdPreco = document.createElement("td");
+            tdPreco.textContent = fmt3(item.preco);
+
+            const tdAlvo = document.createElement("td");
+            tdAlvo.textContent = fmt3(item.alvo);
+
+            const tdGanho = document.createElement("td");
+            tdGanho.textContent = fmt2(item.ganho_pct);
+            if (typeof item.ganho_pct === "number") {
+              tdGanho.className = item.ganho_pct >= 0 ? "verde" : "vermelho";
+            }
+
+            const tdZona = document.createElement("td");
+            tdZona.textContent = item.zona || "";
+
+            const tdRisco = document.createElement("td");
+            tdRisco.textContent = item.risco || "";
+
+            const tdPri = document.createElement("td");
+            tdPri.textContent = item.prioridade || "";
+
+            const tdData = document.createElement("td");
+            tdData.textContent = item.data || "";
+
+            const tdHora = document.createElement("td");
+            tdHora.textContent = item.hora || "";
+
+            tr.appendChild(tdPar);
+            tr.appendChild(tdSide);
+            tr.appendChild(tdPreco);
+            tr.appendChild(tdAlvo);
+            tr.appendChild(tdGanho);
+            tr.appendChild(tdZona);
+            tr.appendChild(tdRisco);
+            tr.appendChild(tdPri);
+            tr.appendChild(tdData);
+            tr.appendChild(tdHora);
+
+            corpo.appendChild(tr);
+          });
+        }
+
+        if (ultima) {
+          info.textContent = "Atualizado via /api/entrada – Último registro: " + ultima;
+        } else {
+          info.textContent = "Ainda sem atualização válida no JSON.";
+        }
+
+        statusApi.textContent = "• Automação OK (API /api/entrada)";
+      } catch (e) {
+        corpo.innerHTML = "";
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 10;
+        td.className = "cinza";
+        td.textContent = "Erro ao carregar /api/entrada. Verifique o serviço do painel.";
+        tr.appendChild(td);
+        corpo.appendChild(tr);
+
+        info.textContent = "Falha ao atualizar via /api/entrada.";
+        statusApi.textContent = "• Automação OFF (API)";
+      }
+    }
+
+    carregarPainel();
+    setInterval(carregarPainel, 10000);
+  </script>
+</body>
+</html>

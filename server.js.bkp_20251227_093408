@@ -1,0 +1,263 @@
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const express = require("express");
+
+const app = express();
+const PORT = Number(process.env.PORT || 8082);
+
+const ROOT = __dirname;
+const INDEX_HTML = path.join(ROOT, "index.html");
+
+const ENTRADA_PATH = process.env.ENTRADA_JSON || path.join(ROOT, "entrada.json");
+const PRECOS_CACHE_PATH = process.env.PRECOS_CACHE_JSON || path.join(ROOT, "precos_cache.json");
+const MFE_CSV = process.env.MFE_CSV || "/home/roteiro_ds/autotrader-planilhas-python/data/mfe_estudos.csv";
+
+let LAST_OK = null;
+
+function brNowParts() {
+  const d = new Date();
+  const fmt = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false
+  });
+  const parts = fmt.formatToParts(d);
+  const get = (t) => (parts.find(p => p.type === t)?.value || "");
+  return { date: `${get("year")}-${get("month")}-${get("day")}`, time: `${get("hour")}:${get("minute")}` };
+}
+
+function readText(p) { return fs.readFileSync(p, "utf8"); }
+
+function readJson(p) {
+  const raw = readText(p).trim();
+  if (!raw) throw new Error("arquivo_vazio");
+  return JSON.parse(raw);
+}
+
+function norm(s) {
+  return String(s || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9_]+/g, "")
+    .toUpperCase();
+}
+
+function isTicker(x) { return /^[A-Z0-9]{2,15}$/.test(x); }
+
+function detectDelim(line) {
+  const sc = (line.match(/;/g) || []).length;
+  const cc = (line.match(/,/g) || []).length;
+  return sc >= cc ? ";" : ",";
+}
+
+function toNum(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(String(v).replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+function readPriceMap() {
+  try {
+    const obj = readJson(PRECOS_CACHE_PATH);
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
+    return {};
+  } catch { return {}; }
+}
+
+function universeFromCSV() {
+  try {
+    const raw = readText(MFE_CSV);
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length <= 1) return [];
+    const delim = detectDelim(lines[0]);
+    const set = new Set();
+    for (let i = 1; i < lines.length; i++) {
+      const par = (lines[i].split(delim)[0] || "").trim().toUpperCase();
+      if (isTicker(par)) set.add(par);
+    }
+    return Array.from(set).sort((a,b)=>a.localeCompare(b));
+  } catch { return []; }
+}
+
+function bestScenarioByCoin() {
+  // retorna map coin -> { lado, alvo, alvo_pct, ganho_pct, score, assert, zona, risco, prioridade }
+  const out = new Map();
+
+  try {
+    const raw = readText(MFE_CSV);
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length <= 1) return out;
+
+    const delim = detectDelim(lines[0]);
+    const header = lines[0].split(delim).map(h => h.trim());
+    const H = header.map(norm);
+
+    const idx = (names) => {
+      for (const n of names) {
+        const k = norm(n);
+        const j = H.indexOf(k);
+        if (j >= 0) return j;
+      }
+      return -1;
+    };
+
+    const iPAR = idx(["PAR"]);
+    const iLADO = idx(["LADO","SIDE","DIRECAO","DIRECAOOPERACAO"]);
+    const iALVO = idx(["ALVO","TARGET"]);
+    const iALVO_PCT = idx(["ALVO_PCT","ALVOPCT","TARGETPCT"]);
+    const iGANHO_PCT = idx(["GANHO_PCT","GANHOPCT","GAINPCT"]);
+    const iSCORE = idx(["SCORE","PONTOS","PONTUACAO"]);
+    const iASSERT = idx(["ASSERTIVIDADE","ASSERT","ACERTO","WINRATE"]);
+    const iZONA = idx(["ZONA"]);
+    const iRISCO = idx(["RISCO"]);
+    const iPRIO = idx(["PRIORIDADE","PRIORIDADE_TXT","PRIO"]);
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(delim);
+      const par = (cols[iPAR] || "").trim().toUpperCase();
+      if (!isTicker(par)) continue;
+
+      const ladoRaw = (iLADO >= 0 ? (cols[iLADO] || "") : "").toUpperCase();
+      const lado = ladoRaw.includes("SHORT") ? "SHORT" : (ladoRaw.includes("LONG") ? "LONG" : "");
+
+      const alvo = iALVO >= 0 ? toNum(cols[iALVO]) : null;
+      const alvo_pct = iALVO_PCT >= 0 ? toNum(cols[iALVO_PCT]) : null;
+      const ganho_pct = iGANHO_PCT >= 0 ? toNum(cols[iGANHO_PCT]) : null;
+      const score = iSCORE >= 0 ? toNum(cols[iSCORE]) : null;
+      const assert = iASSERT >= 0 ? toNum(cols[iASSERT]) : null;
+
+      const zona = iZONA >= 0 ? (cols[iZONA] || "").trim().toUpperCase() : "";
+      const risco = iRISCO >= 0 ? (cols[iRISCO] || "").trim().toUpperCase() : "";
+      const prioridade = iPRIO >= 0 ? (cols[iPRIO] || "").trim().toUpperCase() : "";
+
+      const rank = (score ?? ganho_pct ?? alvo_pct ?? 0);
+
+      const cur = out.get(par);
+      if (!cur || (rank > cur.__rank)) {
+        out.set(par, { lado, alvo, alvo_pct, ganho_pct, score, assert, zona, risco, prioridade, __rank: rank });
+      }
+    }
+  } catch {}
+
+  return out;
+}
+
+function buildFallbackRows() {
+  const uni = universeFromCSV();
+  const priceMap = readPriceMap();
+  const scen = bestScenarioByCoin();
+  const { date, time } = brNowParts();
+
+  return uni.map(par => {
+    const p = (priceMap[par] ?? priceMap[par.toLowerCase()] ?? null);
+    const preco = toNum(p);
+
+    const s = scen.get(par);
+
+    // tenta preencher alvo/ganho usando cenário + preço
+    let side = "NÃO ENTRAR";
+    let alvo = "";
+    let ganho_pct = "";
+
+    let zona = "";
+    let risco = "";
+    let prioridade = "";
+    let assertividade = "";
+    let score = "";
+
+    if (s) {
+      if (s.lado === "LONG" || s.lado === "SHORT") side = s.lado; // mostra direção do cenário
+      zona = s.zona || "";
+      risco = s.risco || "";
+      prioridade = s.prioridade || "";
+      if (s.assert != null) assertividade = s.assert;
+      if (s.score != null) score = s.score;
+
+      // alvo: se não vier absoluto, calcula pelo % em cima do preço atual
+      if (s.alvo != null) {
+        alvo = s.alvo;
+      } else if (preco != null && s.alvo_pct != null) {
+        const pct = s.alvo_pct / 100;
+        alvo = (side === "SHORT") ? (preco * (1 - pct)) : (preco * (1 + pct));
+      }
+
+      // ganho %: prioriza ganho_pct, senão usa alvo_pct
+      if (s.ganho_pct != null) ganho_pct = s.ganho_pct;
+      else if (s.alvo_pct != null) ganho_pct = s.alvo_pct;
+      else if (preco != null && typeof alvo === "number") {
+        ganho_pct = Math.abs((alvo - preco) / preco) * 100;
+      }
+    }
+
+    return {
+      par,
+      side,
+      preco: preco ?? 0,
+      alvo,
+      ganho_pct,
+      assertividade,
+      score,
+      zona,
+      risco,
+      prioridade,
+      data: date,
+      hora: time
+    };
+  });
+}
+
+app.get("/", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.sendFile(INDEX_HTML);
+});
+
+app.get("/health", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    entrada_exists: fs.existsSync(ENTRADA_PATH),
+    csv_exists: fs.existsSync(MFE_CSV),
+    precos_cache_exists: fs.existsSync(PRECOS_CACHE_PATH)
+  });
+});
+
+app.get("/api/entrada", (req, res) => {
+  res.set("Cache-Control", "no-store");
+
+  try {
+    const data = readJson(ENTRADA_PATH);
+    const rows = Array.isArray(data.posicional) ? data.posicional : [];
+
+    if (rows.length > 0) {
+      LAST_OK = data;
+      return res.json({ ...data, stale: false });
+    }
+
+    // sem sinais do worker -> mostra cenários por moeda (sem travar painel)
+    return res.json({
+      ...data,
+      posicional: buildFallbackRows(),
+      stale: false,
+      modo: "SEM_SINAL_MOSTRA_CENARIOS"
+    });
+
+  } catch (e) {
+    if (LAST_OK) return res.json({ ...LAST_OK, stale: true, erro: "fallback_last_ok" });
+
+    const { date, time } = brNowParts();
+    return res.json({
+      posicional: buildFallbackRows(),
+      ultima_atualizacao: `${date} ${time}`,
+      total_sinais: 0,
+      stale: true,
+      modo: "FALLBACK_CENARIOS"
+    });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`[MFE] Painel ouvindo na porta ${PORT}`);
+  console.log(`[MFE] ENTRADA_JSON=${ENTRADA_PATH}`);
+  console.log(`[MFE] MFE_CSV=${MFE_CSV}`);
+});

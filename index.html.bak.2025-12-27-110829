@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ENTRADA MFE - AUTOTRADER (POSICIONAL)</title>
+  <style>
+    :root{
+      --bg:#071a2a;
+      --panel:#0a2438;
+      --line:#11344f;
+      --title:#ff8a00;
+      --white:#e9f2ff;
+      --muted:#9fb4c7;
+      --green:#19e36f;
+      --red:#ff4d4d;
+      --yellow:#ffd34d;
+      --cyan:#66d9ff;
+    }
+    html,body{height:100%;}
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--white);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    }
+    .wrap{max-width:1120px;margin:0 auto;padding:22px 14px 40px;}
+    .top{
+      text-align:center;
+      font-weight:800;
+      letter-spacing:.5px;
+      color:var(--title);
+      font-size:22px;
+      padding:10px 0 16px;
+      border-bottom:2px solid var(--title);
+    }
+    .sub{
+      text-align:center;
+      margin:12px 0 18px;
+      color:var(--muted);
+      font-size:13px;
+    }
+    .statusline{
+      text-align:center;
+      font-size:13px;
+      color:var(--muted);
+      margin:8px 0 14px;
+    }
+    .badge{
+      display:inline-block;
+      padding:4px 10px;
+      border-radius:999px;
+      font-weight:700;
+      font-size:12px;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.04);
+      margin-left:8px;
+    }
+    .ok{color:var(--green);border-color:rgba(25,227,111,.35);}
+    .warn{color:var(--yellow);border-color:rgba(255,211,77,.35);}
+    .err{color:var(--red);border-color:rgba(255,77,77,.35);}
+    .tablebox{
+      background:rgba(10,36,56,.35);
+      border:1px solid var(--line);
+      border-radius:10px;
+      overflow:hidden;
+      box-shadow:0 10px 30px rgba(0,0,0,.25);
+    }
+    table{width:100%;border-collapse:collapse;}
+    thead th{
+      background:rgba(10,36,56,.85);
+      color:var(--title);
+      font-weight:800;
+      font-size:12px;
+      padding:10px 8px;
+      border-bottom:1px solid var(--line);
+      text-transform:uppercase;
+    }
+    tbody td{
+      padding:10px 8px;
+      font-size:13px;
+      border-bottom:1px solid rgba(17,52,79,.7);
+      text-align:center;
+      white-space:nowrap;
+    }
+    tbody tr:hover{background:rgba(255,255,255,.03);}
+    .left{text-align:left;}
+    .side-long{color:var(--green);font-weight:800;}
+    .side-short{color:var(--red);font-weight:800;}
+    .gain{color:var(--green);font-weight:800;}
+    .msgrow td{
+      padding:14px 10px;
+      color:var(--muted);
+      text-align:center;
+      font-style:italic;
+    }
+    .foot{
+      text-align:center;
+      margin-top:14px;
+      color:var(--muted);
+      font-size:12px;
+    }
+    .small{font-size:12px;color:var(--muted);}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">ENTRADA MFE - AUTOTRADER (POSICIONAL)</div>
+    <div class="sub">• Automação OK (API <span class="mono">/api/entrada</span>)</div>
+
+    <div class="statusline" id="statusLine">
+      Carregando…
+      <span class="badge warn" id="badgeMode">INICIANDO</span>
+    </div>
+
+    <div class="tablebox">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>PAR</th>
+            <th>SIDE</th>
+            <th>PREÇO</th>
+            <th>ALVO</th>
+            <th>GANHO %</th>
+            <th>ZONA</th>
+            <th>RISCO</th>
+            <th>PRIORIDADE</th>
+            <th>DATA</th>
+            <th>HORA</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr class="msgrow"><td colspan="10">Aguardando dados…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="foot" id="footLine">—</div>
+  </div>
+
+<script>
+/* MFE_PANEL_BLINDADO_V1 (nunca fica vazio) */
+(function(){
+  const API = "/api/entrada";
+  const LS_KEY = "MFE_LAST_OK_POSICIONAL_V1";
+  const POLL_MS = 15000; // pode ficar menor que 5 min (só lê a API; quem atualiza é o worker)
+  const MAX_CACHE_MS = 24 * 60 * 60 * 1000; // 24h
+
+  const elTbody = document.getElementById("tbody");
+  const elStatus = document.getElementById("statusLine");
+  const elFoot = document.getElementById("footLine");
+  const elBadge = document.getElementById("badgeMode");
+
+  function norm(s){
+    return (s ?? "")
+      .toString()
+      .trim()
+      .toUpperCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
+  }
+  function fmt3(n){
+    const x = Number(n);
+    if (!isFinite(x)) return (n ?? "").toString();
+    return x.toFixed(3);
+  }
+  function fmt2(n){
+    const x = Number(n);
+    if (!isFinite(x)) return (n ?? "").toString();
+    return x.toFixed(2);
+  }
+  function getCache(){
+    try{
+      const raw = localStorage.getItem(LS_KEY);
+      if(!raw) return null;
+      const obj = JSON.parse(raw);
+      if(!obj || !obj.ts || !Array.isArray(obj.rows)) return null;
+      if(Date.now() - obj.ts > MAX_CACHE_MS) return null;
+      return obj;
+    }catch(_){ return null; }
+  }
+  function setCache(rows, meta){
+    try{
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        ts: Date.now(),
+        rows,
+        meta: meta || {}
+      }));
+    }catch(_){}
+  }
+
+  function paintCellByRule(td, kind){
+    const t = norm(td.textContent);
+    td.style.fontWeight = "800";
+
+    if(kind === "ZONA"){
+      // zona verde/amarela/vermelha
+      if(t.includes("VERDE")) td.style.color = "#19e36f";
+      else if(t.includes("AMARE")) td.style.color = "#ffd34d";
+      else if(t.includes("VERMEL")) td.style.color = "#ff4d4d";
+      else td.style.color = "";
+      return;
+    }
+    if(kind === "RISCO"){
+      // baixo=verde | medio=amarelo | alto=vermelho
+      if(t.includes("BAIX")) td.style.color = "#19e36f";
+      else if(t.includes("MED")) td.style.color = "#ffd34d";
+      else if(t.includes("ALT")) td.style.color = "#ff4d4d";
+      else td.style.color = "";
+      return;
+    }
+    if(kind === "PRIORIDADE"){
+      // alta=verde | media=amarelo | baixa=vermelho
+      if(t.includes("ALTA")) td.style.color = "#19e36f";
+      else if(t.includes("MEDIA")) td.style.color = "#ffd34d";
+      else if(t.includes("BAIXA")) td.style.color = "#ff4d4d";
+      else td.style.color = "";
+      return;
+    }
+  }
+
+  function render(rows, meta){
+    elTbody.innerHTML = "";
+
+    if(!rows || !rows.length){
+      const tr = document.createElement("tr");
+      tr.className = "msgrow";
+      const td = document.createElement("td");
+      td.colSpan = 10;
+      td.textContent = meta?.message || "Nenhuma moeda com sinal neste ciclo.";
+      tr.appendChild(td);
+      elTbody.appendChild(tr);
+      return;
+    }
+
+    for(const r of rows){
+      const tr = document.createElement("tr");
+
+      const par = (r.par ?? "").toString().toUpperCase();
+      const side = (r.side ?? "").toString().toUpperCase();
+      const preco = fmt3(r.preco);
+      const alvo = fmt3(r.alvo);
+      const ganho = fmt2(r.ganho_pct);
+      const zona = (r.zona ?? "").toString().toUpperCase();
+      const risco = (r.risco ?? "").toString().toUpperCase();
+      const prio = (r.prioridade ?? "").toString().toUpperCase();
+
+      let data = (r.data ?? "").toString();
+      let hora = (r.hora ?? "").toString();
+      if((!data || !hora) && meta?.ultima_atualizacao){
+        const ua = (meta.ultima_atualizacao || "").toString();
+        // aceita "YYYY-MM-DD HH:MM" ou "YYYY-MM-DDTHH:MM"
+        const m = ua.replace("T"," ").split(" ");
+        if(!data && m[0]) data = m[0];
+        if(!hora && m[1]) hora = m[1].slice(0,5);
+      }
+
+      const cells = [
+        {v: par, cls:""},
+        {v: side, cls: side.includes("LONG") ? "side-long" : (side.includes("SHORT") ? "side-short" : "")},
+        {v: preco, cls:""},
+        {v: alvo, cls:""},
+        {v: ganho, cls:"gain"},
+        {v: zona, cls:""},
+        {v: risco, cls:""},
+        {v: prio, cls:""},
+        {v: data, cls:""},
+        {v: hora, cls:""},
+      ];
+
+      for(let i=0;i<cells.length;i++){
+        const td = document.createElement("td");
+        td.textContent = cells[i].v;
+        if(cells[i].cls) td.className = cells[i].cls;
+
+        if(i===5) paintCellByRule(td,"ZONA");
+        if(i===6) paintCellByRule(td,"RISCO");
+        if(i===7) paintCellByRule(td,"PRIORIDADE");
+
+        tr.appendChild(td);
+      }
+      elTbody.appendChild(tr);
+    }
+  }
+
+  function setBadge(kind){
+    elBadge.className = "badge " + (kind==="OK" ? "ok" : (kind==="WARN" ? "warn" : "err"));
+    elBadge.textContent =
+      (kind==="OK" ? "AO VIVO" : (kind==="WARN" ? "SEM SINAL (MANTENDO ÚLTIMO)" : "ERRO (MANTENDO ÚLTIMO)"));
+  }
+
+  async function tick(){
+    const cache = getCache();
+
+    try{
+      const r = await fetch(API, {cache:"no-store"});
+      const data = await r.json();
+
+      const rows = Array.isArray(data?.posicional) ? data.posicional : [];
+      const total = Number(data?.total_sinais ?? rows.length ?? 0);
+
+      // status line
+      const ua = (data?.ultima_atualizacao ?? "-").toString();
+      const age = (data?.age_sec ?? "").toString();
+      elFoot.textContent = `Atualizado via /api/entrada — Último registro: ${ua}  |  total_sinais: ${total}${age?("  |  age_sec: "+age):""}`;
+
+      if(rows.length > 0){
+        setCache(rows, data);
+        setBadge("OK");
+        elStatus.innerHTML = `Dados recebidos da API. <span class="badge ok">OK</span>`;
+        render(rows, data);
+        return;
+      }
+
+      // veio SEM SINAL: manter último
+      if(cache && cache.rows && cache.rows.length){
+        setBadge("WARN");
+        const t = new Date(cache.ts);
+        const hh = String(t.getHours()).padStart(2,"0");
+        const mm = String(t.getMinutes()).padStart(2,"0");
+        elStatus.innerHTML = `Sem sinal neste ciclo (API). Exibindo último sinal válido do navegador (${hh}:${mm}). <span class="badge warn">STICKY</span>`;
+        render(cache.rows, cache.meta || data);
+        return;
+      }
+
+      // sem cache: mostra mensagem (mas não “some” tudo)
+      setBadge("WARN");
+      elStatus.innerHTML = `Sem sinal neste ciclo (API) e sem histórico salvo no navegador. <span class="badge warn">0 SINAIS</span>`;
+      render([], {message:"Nenhuma moeda com sinal LONG/SHORT neste ciclo. Aguarde a próxima atualização."});
+    }catch(e){
+      // erro: manter último
+      if(cache && cache.rows && cache.rows.length){
+        setBadge("ERR");
+        const t = new Date(cache.ts);
+        const hh = String(t.getHours()).padStart(2,"0");
+        const mm = String(t.getMinutes()).padStart(2,"0");
+        elStatus.innerHTML = `Falha ao ler a API agora. Exibindo último sinal válido do navegador (${hh}:${mm}). <span class="badge err">FALLBACK</span>`;
+        render(cache.rows, cache.meta || {});
+        return;
+      }
+      setBadge("ERR");
+      elStatus.innerHTML = `Falha ao ler a API e sem histórico no navegador. <span class="badge err">ERRO</span>`;
+      render([], {message:"Falha na API e sem histórico salvo. Tente atualizar (F5)."});
+    }
+  }
+
+  tick();
+  setInterval(tick, POLL_MS);
+})();
+</script>
+</body>
+</html>
